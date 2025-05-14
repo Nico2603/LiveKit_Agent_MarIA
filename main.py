@@ -8,6 +8,7 @@ from pathlib import Path # Para leer el archivo de prompt
 
 from dotenv import load_dotenv
 import aiohttp # Para llamadas HTTP asíncronas
+from openai import AsyncOpenAI as OpenAIClientForSummary # Renombrar para claridad
 
 from livekit.agents import (
     JobContext, 
@@ -53,6 +54,21 @@ except FileNotFoundError:
 except Exception as e:
     logging.error(f"Error al cargar o validar el archivo de prompt {PROMPT_FILE_PATH}: {e}. Usando un prompt de respaldo genérico.", exc_info=True)
     MARIA_SYSTEM_PROMPT_TEMPLATE = "Eres una asistente virtual llamada María. Tu objetivo es ayudar con la ansiedad. Saluda al usuario {username}. Considera esta información previa: {latest_summary}"
+
+# --- Configuración del cliente OpenAI para resúmenes ---
+# Este cliente se usará específicamente para la tarea de resumen.
+# La API Key se tomará de la variable de entorno OPENAI_API_KEY.
+openai_summary_client: Optional[OpenAIClientForSummary] = None
+try:
+    # Inicializar solo si la variable de entorno está presente
+    if os.getenv("OPENAI_API_KEY"):
+        openai_summary_client = OpenAIClientForSummary()
+        logging.info("Cliente AsyncOpenAI para resúmenes (OpenAIClientForSummary) inicializado.")
+    else:
+        logging.warning("La variable de entorno OPENAI_API_KEY no está configurada. La generación de resúmenes no funcionará.")
+except Exception as e:
+    logging.error(f"No se pudo inicializar el cliente AsyncOpenAI para resúmenes: {e}", exc_info=True)
+    openai_summary_client = None # Asegurar que sea None si falla la inicialización
 
 class MariaVoiceAgent(Agent):
     def __init__(self, 
@@ -468,27 +484,95 @@ async def job_entrypoint(job: JobContext):
                 async with http_session.put(f"{nextjs_api_base_url}/api/sessions/{chat_session_id}") as resp:
                     if resp.status == 200:
                         logging.info(f"Sesión {chat_session_id} marcada como finalizada exitosamente.")
-                        logging.info(f"Creando tarea no bloqueante para solicitar resumen para sesión {chat_session_id}.")
                         
-                        async def request_summary(session_id, base_url, sess_to_use):
+                        # --- INICIO: Nueva lógica para generar y guardar resumen ---
+                        logging.info(f"Creando tarea no bloqueante para generar y guardar resumen para sesión {chat_session_id}.")
+                        
+                        async def generate_and_save_summary_task(cs_id: str, api_url: str, sess: aiohttp.ClientSession):
+                            logging.info(f"[Tarea Resumen] Iniciando para sesión: {cs_id}")
                             try:
-                                logging.info(f"Tarea de resumen: Solicitando para {session_id}")
-                                async with sess_to_use.post(f"{base_url}/api/summarize", json={"chatSessionId": session_id}) as sum_resp:
-                                    if sum_resp.status == 200:
-                                        summary_data = await sum_resp.json()
-                                        logging.info(f"Tarea de resumen: Éxito para {session_id}. Resumen: {summary_data.get('summary', 'N/A')[:100]}...")
+                                # 1. Obtener mensajes de la ChatSession
+                                # Asume que la API Next.js GET /api/messages?chatSessionId=... está disponible y protegida adecuadamente.
+                                logging.info(f"[Tarea Resumen] Obteniendo mensajes para {cs_id} desde {api_url}/api/messages?chatSessionId={cs_id}")
+                                
+                                # NOTA DE SEGURIDAD: Si la API GET /api/messages requiere una API Key,
+                                # deberás añadirla a los headers de esta petición GET.
+                                # Ejemplo: headers={\"X-API-KEY\": os.getenv(\"AGENT_API_KEY\")}
+                                async with sess.get(f"{api_url}/api/messages?chatSessionId={cs_id}") as messages_resp:
+                                    if not messages_resp.ok:
+                                        error_text = await messages_resp.text()
+                                        logging.error(f"[Tarea Resumen] Error al obtener mensajes para {cs_id} ({messages_resp.status}): {error_text}")
+                                        return
+
+                                    messages_data = await messages_resp.json()
+                                    messages_list = messages_data.get("messages")
+
+                                    if not messages_list or len(messages_list) == 0:
+                                        logging.info(f"[Tarea Resumen] No hay mensajes para resumir para {cs_id}.")
+                                        # Opcional: Guardar un resumen indicando que no hubo mensajes
+                                        # summary_payload = {"chatSessionId": cs_id, "summary": "No se encontraron mensajes para resumir."}
+                                        # async with sess.post(f"{api_url}/api/summarize", json=summary_payload) as no_msg_resp:
+                                        #    logging.info(f"[Tarea Resumen] Guardado 'sin mensajes' para {cs_id} ({no_msg_resp.status})")
+                                        return
+
+                                conversation_text_parts = []
+                                for msg_item in messages_list:
+                                    sender_prefix = "Usuario" if msg_item.get("sender") == "user" else "Maria"
+                                    conversation_text_parts.append(f"{sender_prefix}: {msg_item.get('content', '')}")
+                                conversation_text = "\n".join(conversation_text_parts)
+
+                                # 2. Llamar a OpenAI para generar resumen
+                                if not openai_summary_client:
+                                    logging.error("[Tarea Resumen] Cliente OpenAI para resúmenes (OpenAIClientForSummary) no inicializado. No se puede generar resumen para {cs_id}.")
+                                    return
+
+                                system_prompt_for_summary = "Eres un asistente experto en resumir conversaciones terapéuticas. Proporciona un resumen conciso (8-10 frases) de los temas clave tratados en la siguiente conversación entre un usuario y una IA llamada Maria. El resumen debe capturar los puntos emocionales o problemas principales mencionados por el usuario."
+                                user_content_for_summary = f"Conversación a resumir:\n\n{conversation_text}"
+                                
+                                logging.info(f"[Tarea Resumen] Solicitando resumen a OpenAI para {cs_id}...")
+                                completion = await openai_summary_client.chat.completions.create(
+                                    model=os.getenv("OPENAI_SUMMARY_MODEL", "gpt-3.5-turbo"), # Puedes usar una variable de entorno diferente para el modelo de resumen
+                                    messages=[
+                                        {"role": "system", "content": system_prompt_for_summary},
+                                        {"role": "user", "content": user_content_for_summary}
+                                    ],
+                                    temperature=0.5,
+                                    max_tokens=300 # Ajusta según necesidad
+                                )
+                                summary_text_generated = completion.choices[0].message.content
+                                
+                                if not summary_text_generated:
+                                    logging.error(f"[Tarea Resumen] OpenAI no devolvió un resumen para {cs_id}.")
+                                    return
+                                
+                                summary_text_generated = summary_text_generated.strip()
+                                logging.info(f"[Tarea Resumen] Resumen generado para {cs_id}: '{summary_text_generated[:100]}...'" )
+
+                                # 3. Guardar resumen en la ChatSession (llamada a la API /api/summarize del frontend)
+                                summary_payload = {"chatSessionId": cs_id, "summary": summary_text_generated}
+                                logging.info(f"[Tarea Resumen] Guardando resumen para {cs_id} vía {api_url}/api/summarize")
+                                
+                                # NOTA DE SEGURIDAD: Si la API POST /api/summarize requiere una API Key,
+                                # deberás añadirla a los headers de esta petición POST.
+                                async with sess.post(f"{api_url}/api/summarize", json=summary_payload) as sum_save_resp:
+                                    if sum_save_resp.ok:
+                                        saved_data = await sum_save_resp.json()
+                                        logging.info(f"[Tarea Resumen] Éxito al guardar resumen para {cs_id}. Detalle: {saved_data.get('summary', 'N/A')[:100]}...")
                                     else:
-                                        error_text = await sum_resp.text()
-                                        logging.error(f"Tarea de resumen: Error al solicitar para {session_id} ({sum_resp.status}): {error_text}")
+                                        error_text_save = await sum_save_resp.text()
+                                        logging.error(f"[Tarea Resumen] Error al guardar resumen para {cs_id} ({sum_save_resp.status}): {error_text_save}")
+
                             except Exception as e_sum_task:
-                                logging.error(f"Tarea de resumen: Excepción para {session_id}: {e_sum_task}", exc_info=True)
+                                logging.error(f"[Tarea Resumen] Excepción general en la tarea de generar/guardar para {cs_id}: {e_sum_task}", exc_info=True)
                         
-                        # Usar la http_session que sabemos que está abierta.
-                        asyncio.create_task(request_summary(chat_session_id, nextjs_api_base_url, http_session))
+                        # Crear y ejecutar la tarea de resumen de forma no bloqueante
+                        asyncio.create_task(generate_and_save_summary_task(chat_session_id, nextjs_api_base_url, http_session))
+                        # --- FIN: Nueva lógica para generar y guardar resumen ---
+                        
                     else:
                         error_text = await resp.text()
                         logging.error(f"Error al marcar sesión {chat_session_id} como finalizada ({resp.status}): {error_text}")
-            except aiohttp.ClientError as e_conn: # Más genérico que ClientConnectorError
+            except aiohttp.ClientError as e_conn:
                  logging.error(f"Error de cliente HTTP al finalizar/resumir sesión para {chat_session_id}: {e_conn}", exc_info=True)
             except Exception as e_session_finalize:
                 logging.error(f"Excepción durante la finalización/resumen de sesión para {chat_session_id}: {e_session_finalize}", exc_info=True)
