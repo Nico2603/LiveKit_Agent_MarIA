@@ -331,8 +331,15 @@ async def _create_and_start_maria_agent(
         return None
 
 async def job_entrypoint(job: JobContext):
-    logging.info(f"Iniciando trabajo de agente para la sala: {job.room.name}, participante: {job.participant.name if job.participant else 'N/A'}")
-    
+    """
+    Job entrypoint
+    """
+    _initial_ctx_token.set(Context())
+    logging.info(f"Iniciando trabajo de agente para la sala: {job.room.name}")
+
+    agent = AIAgent(job_ctx=job)
+    # Set up the plugins
+
     # --- Configuración Inicial y Obtención de Metadata ---
     nextjs_api_base_url = os.getenv("NEXTJS_API_BASE_URL", "http://localhost:3000")
     tavus_api_key = os.getenv("TAVUS_API_KEY")
