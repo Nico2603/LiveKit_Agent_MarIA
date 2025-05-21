@@ -96,6 +96,8 @@ class MariaVoiceAgent(Agent):
             logging.debug(f"Enviando DataChannel: type={data_type}, payload={data_payload}")
             if hasattr(self, 'session') and self.session and self.session.room and self.session.room.local_participant:
                  await self.session.room.local_participant.publish_data(json.dumps({"type": data_type, "payload": data_payload}))
+                 if data_type == "initial_greeting_message":
+                     logging.debug("► Mensaje 'initial_greeting_message' enviado vía DataChannel")
             else:
                  logging.warning("No se pudo enviar custom data: self.session no está disponible o inicializado.")
         except Exception as e:
@@ -331,100 +333,58 @@ async def _create_and_start_maria_agent(
         return None
 
 async def job_entrypoint(job: JobContext):
-    """
-    Job entrypoint
-    """
-    _initial_ctx_token.set(Context())
+    """Punto de entrada para el trabajo del agente LiveKit."""
+    logging.info(f"JOB_ENTRYPOINT_STARTED for room {job.room.name}")
     logging.info(f"Iniciando trabajo de agente para la sala: {job.room.name}")
 
-    agent = AIAgent(job_ctx=job)
-    # Set up the plugins
-
-    # --- Configuración Inicial y Obtención de Metadata ---
-    nextjs_api_base_url = os.getenv("NEXTJS_API_BASE_URL", "http://localhost:3000")
-    tavus_api_key = os.getenv("TAVUS_API_KEY")
-    tavus_persona_id = os.getenv("TAVUS_PERSONA_ID")
-    tavus_replica_id = os.getenv("TAVUS_STOCK_REPLICA_ID")
-
-    chat_session_id: Optional[str] = None
-    username: str = "Usuario"
-    
-    if job.participant and job.participant.metadata:
-        participant_metadata = parse_participant_metadata(job.participant.metadata)
-        logging.debug(f"Metadata de participante parseada: {participant_metadata}")
-        user_id_for_api = participant_metadata.get("userId")
-        
-        username_from_meta = participant_metadata.get("username")
-        if username_from_meta:
-            username = username_from_meta
-            logging.info(f"Username '{username}' obtenido de metadata.")
-        elif job.participant and job.participant.name and job.participant.name != job.participant.identity:
-            username = job.participant.name
-            logging.info(f"Usando nombre de participante de LiveKit como username: {username}")
-        
-        session_id_from_meta = participant_metadata.get("chatSessionId")
-        if session_id_from_meta:
-            chat_session_id = session_id_from_meta
-            logging.info(f"ChatSessionId '{chat_session_id}' obtenido de metadata.")
-        else:
-            logging.warning("chatSessionId no encontrado en metadata. Algunas funciones de guardado podrían fallar.")
-    
-    if not chat_session_id:
-        logging.error("No se pudo obtener chatSessionId. El agente no podrá guardar mensajes ni finalizar la sesión correctamente.")
-        # Considerar si el job debe terminar aquí si chat_session_id es crítico.
-        # Por ahora, permite continuar, pero las funciones de guardado fallarán.
-
-    # --- Inicialización de Componentes --- 
-    agent: Optional[MariaVoiceAgent] = None
-    tavus_avatar: Optional[Any] = None # Optional[tavus.AvatarSession] = None <- Cambiar tipo
-    http_session: Optional[aiohttp.ClientSession] = None 
+    http_session: Optional[aiohttp.ClientSession] = None # Definir fuera del try para que esté disponible en finally
+    agent_session: Optional[AgentSession] = None # Para mantener la instancia de AgentSession
 
     try:
-        http_session = aiohttp.ClientSession()
+        metadata = parse_participant_metadata(job.participant.metadata)
+        user_id = metadata.get("userId")
+        username = metadata.get("username", "Usuario") 
+        chat_session_id = metadata.get("chatSessionId")
 
-        # 1) Configuración de Plugins STT, LLM, VAD, TTS
-        stt_plugin, llm_plugin, vad_plugin, tts_cartesia_plugin = await _setup_plugins(job)
-        if not all([stt_plugin, llm_plugin, vad_plugin, tts_cartesia_plugin]):
-            logging.error("Fallo en la configuración de plugins esenciales. Terminando el job.")
-            # No es necesario un raise aquí si la lógica de limpieza en finally es robusta
-            # y el job terminará naturalmente al salir de este try.
-            return # Terminar el job si los plugins fallan
+        if not chat_session_id:
+            logging.error("chatSessionId no encontrado en la metadata. No se puede iniciar el agente.")
+            return
 
-        # AgentSession se usa para Tavus, pero no directamente para el TTS de MariaVoiceAgent
-        agent_session_instance = AgentSession( 
-            llm=llm_plugin,
-            stt=stt_plugin,
-            vad=vad_plugin, 
-            tts=None # TTS es manejado explícitamente por MariaVoiceAgent y Tavus (si usa el TTS de AgentSession)
-        )
-        logging.debug("AgentSession para Tavus (si aplica) configurada.")
-            
-        # 2) Configuración e inicio de Tavus Avatar
-        tavus_avatar = await _setup_and_start_tavus_avatar(
-            agent_session_instance, 
-            job.room, 
-            tavus_api_key, 
-            tavus_replica_id, 
-            tavus_persona_id
-        )
-        # Si Tavus falla, el agente de voz puede continuar.
+        logging.info(f"Metadata parseada: userId='{user_id}', username='{username}', chatSessionId='{chat_session_id}'")
 
-        # 3) Creación e inicio de MariaVoiceAgent
-        agent = await _create_and_start_maria_agent(
+        # Usar variables de entorno para la URL base de la API
+        base_url = os.getenv("NEXT_PUBLIC_API_URL")
+        if not base_url:
+            logging.error("NEXT_PUBLIC_API_URL no está configurada en las variables de entorno.")
+            return
+        
+        http_session = aiohttp.ClientSession() # Crear la sesión aquí
+
+        stt_plugin, llm_plugin, vad_plugin, tts_plugin = await _setup_plugins(job)
+        if not all([stt_plugin, llm_plugin, vad_plugin, tts_plugin]):
+            logging.error("No se pudieron configurar todos los plugins necesarios. Terminando el trabajo.")
+            return
+
+        # Crear la instancia de MariaVoiceAgent (antes AIAgent)
+        agent = MariaVoiceAgent( # Cambiado de AIAgent a MariaVoiceAgent
             http_session=http_session,
-            base_url=nextjs_api_base_url,
+            base_url=base_url,
             chat_session_id=chat_session_id,
             username=username,
             stt_plugin=stt_plugin,
             llm_plugin=llm_plugin,
-            tts_plugin=tts_cartesia_plugin,
+            tts_plugin=tts_plugin,
             vad_plugin=vad_plugin,
-            room=job.room,
-            participant=job.participant
+            # Aquí puedes añadir cualquier otro parámetro que MariaVoiceAgent necesite
         )
-        if not agent:
-            logging.error("Fallo al crear o iniciar MariaVoiceAgent. Terminando el job.")
-            return # Terminar el job si el agente principal falla
+        
+        # Inicializar AgentSession con la instancia de MariaVoiceAgent
+        agent_session = AgentSession(
+            agent=agent, 
+            room=job.room, 
+            participant=job.participant,
+            # Eliminar worker_type ya que no es un parámetro válido para AgentSession
+        )
 
         # El agente está corriendo. El job_entrypoint esperará implícitamente aquí
         # debido a las tareas asíncronas del agente (ej. listeners, bucles internos).
@@ -462,7 +422,7 @@ async def job_entrypoint(job: JobContext):
         if chat_session_id and http_session and not http_session.closed:
             try:
                 logging.info(f"Marcando sesión {chat_session_id} como finalizada en la API.")
-                async with http_session.put(f"{nextjs_api_base_url}/api/sessions/{chat_session_id}") as resp:
+                async with http_session.put(f"{base_url}/api/sessions/{chat_session_id}") as resp:
                     if resp.status == 200:
                         logging.info(f"Sesión {chat_session_id} marcada como finalizada exitosamente.")
                     else:
