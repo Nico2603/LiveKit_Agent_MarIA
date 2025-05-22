@@ -11,7 +11,7 @@ import aiohttp # Para llamadas HTTP asíncronas
 
 from livekit.agents import (
     JobContext, 
-    WorkerOptions, 
+    WorkerOptions,
     cli, # Importar cli como módulo desde livekit.agents
     stt, 
     llm, 
@@ -19,9 +19,10 @@ from livekit.agents import (
     vad, 
     AgentSession,
     Agent,
-    WorkerType
+    WorkerType,
 )
-from livekit.rtc import RoomEvent, RemoteParticipant, Room # Añadir RoomEvent, RemoteParticipant, Room
+from livekit.rtc import RemoteParticipant, Room # RoomEvent eliminado de esta línea
+# from livekit.protocol import RoomEvent # Eliminar esta línea o asegurarse que no esté activa
 # from livekit.agents.tts import TTSPlaybackStarted, TTSPlaybackFinished # Eliminar esta importación
 from livekit.plugins import deepgram, openai, silero, cartesia, tavus # MODIFIED: Descomentado tavus
 # from livekit import RoomEvent # <- Comentar esta línea
@@ -393,239 +394,240 @@ async def _setup_and_start_tavus_avatar(
         logging.error(f"Error al iniciar Tavus AvatarSession: {e_tavus}", exc_info=True)
         return None
 
-async def find_target_participant_in_room(room: Room, identity: str, timeout: float = 60.0) -> Optional[RemoteParticipant]:
+async def find_target_participant_in_room(room: Room, identity_str: str, timeout: float = 60.0) -> Optional[RemoteParticipant]:
     # Si ya está en la sala:
     for p in room.participants.values():
-        if isinstance(p, RemoteParticipant) and p.identity == identity:
-            logging.info(f"Participante objetivo '{identity}' encontrado directamente en la sala.")
+        if p.identity == identity_str: # Comparar con identity_str
+            logging.info(f"Participante objetivo '{identity_str}' encontrado en la sala.")
             return p
     
-    # Si no, esperamos el evento de conexión
-    logging.info(f"Participante objetivo '{identity}' no encontrado. Esperando conexión con timeout de {timeout}s...")
-    fut = asyncio.get_event_loop().create_future()
+    # Esperar a que el participante se conecte
+    future = asyncio.Future()
 
     def on_participant_connected_handler(new_p: RemoteParticipant, *args): # La firma puede variar, *args para flexibilidad
         # El SDK livekit-rtc pasa RemoteParticipant directamente para PARTICIPANT_CONNECTED
-        logging.debug(f"Evento RoomEvent.PARTICIPANT_CONNECTED recibido: identity='{new_p.identity}'")
-        if new_p.identity == identity and not fut.done():
-            logging.info(f"Participante objetivo '{identity}' conectado a la sala.")
-            fut.set_result(new_p)
-            # No desregistrar aquí para permitir que el finally lo haga y evitar errores si el futuro ya está resuelto.
+        logging.debug(f"Participante conectado: {new_p.identity}, buscando: {identity_str}")
+        if new_p.identity == identity_str: # Comparar con identity_str
+            if not future.done():
+                future.set_result(new_p)
+            # Ya no necesitamos escuchar este evento una vez encontrado el participante
+            room.off("participant_connected", on_participant_connected_handler)
 
-    room.on(RoomEvent.PARTICIPANT_CONNECTED, on_participant_connected_handler)
-    
+    room.on("participant_connected", on_participant_connected_handler)
+
     try:
-        return await asyncio.wait_for(fut, timeout=timeout)
+        logging.info(f"Esperando al participante objetivo '{identity_str}' para que se una a la sala (timeout: {timeout}s)...")
+        target_participant = await asyncio.wait_for(future, timeout=timeout)
+        logging.info(f"Participante objetivo '{identity_str}' se ha unido a la sala.")
+        return target_participant
     except asyncio.TimeoutError:
-        logging.error(f"Timeout esperando al participante objetivo '{identity}' después de {timeout} segundos.")
+        logging.error(f"Timeout esperando al participante objetivo '{identity_str}'.")
+        # Asegurarse de remover el listener si hay timeout
+        room.off("participant_connected", on_participant_connected_handler)
         return None
     finally:
-        # Siempre desregistrar el listener para evitar fugas o llamadas múltiples.
-        room.off(RoomEvent.PARTICIPANT_CONNECTED, on_participant_connected_handler)
-        logging.debug(f"Listener para PARTICIPANT_CONNECTED (buscando '{identity}') desregistrado.")
+        # Remover el listener en caso de que el futuro se resuelva por otra vía o haya error
+        # Esto es una salvaguarda, ya que idealmente se remueve al encontrar el participante o en timeout
+        room.off("participant_connected", on_participant_connected_handler)
 
 async def job_entrypoint(job: JobContext):
-    """Punto de entrada para el trabajo del agente LiveKit."""
     logging.info(f"JOB_ENTRYPOINT_STARTED for room {job.room.name}")
-    
-    await job.connect() # Conectar al job
-    logging.info(f"Conectado como {job.participant.identity}")
-    logging.debug(f"Metadatos del participante conectado (job.participant.metadata): {job.participant.metadata}")
-
-    logging.info(f"Iniciando trabajo de agente para la sala: {job.room.name}")
-
-    http_session: Optional[aiohttp.ClientSession] = None
-    agent: Optional[MariaVoiceAgent] = None # Explicitly declare agent type
-    agent_session: Optional[AgentSession] = None
-    tavus_avatar_session: Optional[tavus.AvatarSession] = None # MODIFIED: Añadida declaración para Tavus session
-    chat_session_id: Optional[str] = None # Inicializar chat_session_id
-    target_participant_identity = None # Inicializar target_participant_identity
+    http_session = None # Inicializar para el bloque finally
 
     try:
-        # Intentar obtener la cadena de metadatos del job.
-        # Usamos job.participant.metadata ya que job.connect() lo habrá poblado.
-        participant_metadata_str = job.participant.metadata # Anteriormente getattr(job, 'metadata', None)
+        # ① Conéctate al job
+        await job.connect()
+        logging.info(f"Conectado como agente: {job.room.local_participant.identity}")
 
-        if not participant_metadata_str:
-            logging.error("No se pudieron obtener los metadatos del participante (job.participant.metadata está vacío o es None). "
-                          "Estos metadatos son necesarios para extraer chatSessionId, username, etc. No se puede continuar.")
-            await job.shutdown() # Asegurar shutdown antes de salir
+        # Obtener la identidad del participante objetivo.
+        # DEBERÁS REEMPLAZAR ESTO CON LA LÓGICA REAL PARA OBTENER `identity_str`
+        # si no es a través de una variable de entorno.
+        identity_str = os.getenv("LIVEKIT_TARGET_PARTICIPANT_IDENTITY")
+        if not identity_str:
+            logging.error("CRÍTICO: La identidad del participante objetivo (identity_str) no está definida. "
+                          "Esta identidad es necesaria para encontrar al usuario en la sala. "
+                          "Configura la variable de entorno LIVEKIT_TARGET_PARTICIPANT_IDENTITY. Abortando job.")
             return
 
-        logging.debug(f"Metadata string obtenida del job: {participant_metadata_str}")
-        parsed_user_info = parse_participant_metadata(participant_metadata_str)
-        user_id = parsed_user_info.get("userId")
-        username = parsed_user_info.get("username", "Usuario") 
-        chat_session_id = parsed_user_info.get("chatSessionId")
-        tavus_replica_id = parsed_user_info.get("tavusReplicaId") # Asegúrate que parse_participant_metadata los devuelve
-        tavus_persona_id = parsed_user_info.get("tavusPersonaId") # Asegúrate que parse_participant_metadata los devuelve
+        logging.info(f"Buscando participante objetivo con identidad: '{identity_str}' en la sala '{job.room.name}'.")
+
+        # ② Busca al participante de usuario
+        target_remote_participant = await find_target_participant_in_room(
+            job.room,
+            identity_str,
+        )
+        if not target_remote_participant:
+            logging.error(f"No se encontró el participante de usuario con identidad '{identity_str}' en la sala '{job.room.name}'. Abortando job.")
+            return
+
+        logging.info(f"Participante de usuario '{target_remote_participant.identity}' encontrado en la sala '{job.room.name}'.")
+
+        # ③ Extrae la metadata del usuario desde el participante
+        metadata_str = target_remote_participant.metadata
+        if not metadata_str:
+            logging.error(f"El participante '{target_remote_participant.identity}' no tiene metadata. Abortando job.")
+            return
+
+        logging.debug(f"Metadata JSON recibida del participante '{target_remote_participant.identity}': {metadata_str}")
         
-        # Se necesitaría la identidad del participante objetivo para encontrar el objeto RemoteParticipant.
-        # Asumimos que está en los metadatos parseados, por ejemplo, como 'participantIdentity'.
-        target_participant_identity = parsed_user_info.get("targetParticipantIdentity")
-
-        if not chat_session_id:
-            logging.error("chatSessionId no encontrado en los metadatos del job. No se puede iniciar el agente.")
-            await job.shutdown() # Asegurar shutdown antes de salir
+        parsed_metadata = parse_participant_metadata(metadata_str) # Esta función ya loguea errores internos
+        if not parsed_metadata: # Si el parseo falló y devolvió un diccionario vacío o None
+            logging.error(f"Fallo al parsear la metadata del participante '{target_remote_participant.identity}'. Abortando job.")
             return
 
-        if not target_participant_identity:
-            logging.error("targetParticipantIdentity no encontrado en los metadatos del job. No se puede iniciar el agente para un participante específico.")
-            # Decidir si continuar sin un participante objetivo o salir. Por ahora, salimos.
-            await job.shutdown() # Asegurar shutdown antes de salir
-            return
+        chat_session_id = parsed_metadata.get("chatSessionId")
+        username = parsed_metadata.get("username")
+        user_id = parsed_metadata.get("userId") # Asegúrate que este campo exista en tu metadata
 
-        logging.info(f"Metadata parseada del job: userId='{user_id}', username='{username}', chatSessionId='{chat_session_id}', targetParticipantIdentity='{target_participant_identity}'")
+        missing_fields = []
+        if not chat_session_id: missing_fields.append("'chatSessionId'")
+        if not username: missing_fields.append("'username'")
+        if not user_id: missing_fields.append("'userId'") # Opcional, si lo necesitas
 
-        # Usar variables de entorno para la URL base de la API
-        base_url = os.getenv("NEXT_PUBLIC_API_URL")
-        if not base_url:
-            logging.error("NEXT_PUBLIC_API_URL no está configurada en las variables de entorno.")
-            await job.shutdown() # Asegurar shutdown antes de salir
+        if missing_fields:
+            logging.error(f"Metadata del participante '{target_remote_participant.identity}' incompleta. "
+                          f"Faltan campos o son nulos: {', '.join(missing_fields)}. Abortando job.")
             return
         
-        http_session = aiohttp.ClientSession() # Crear la sesión aquí
+        logging.info(f"Metadata extraída para el usuario '{username}' (ID: {user_id}, ChatSessionID: {chat_session_id}).")
 
+        # ④ Configura plugins
         stt_plugin, llm_plugin, vad_plugin, tts_plugin = await _setup_plugins(job)
         if not all([stt_plugin, llm_plugin, vad_plugin, tts_plugin]):
-            logging.error("No se pudieron configurar todos los plugins necesarios. Terminando el trabajo.")
-            if http_session and not http_session.closed: await http_session.close()
-            await job.shutdown() # Asegurar shutdown antes de salir
+            logging.error("Error configurando uno o más plugins. Abortando job.")
+            # No es necesario cerrar la http_session aquí, el finally lo hará.
             return
+        logging.info("Todos los plugins han sido configurados exitosamente.")
 
-        # NUEVO: Encontrar el RemoteParticipant objetivo
-        target_remote_participant = await find_target_participant_in_room(job.room, target_participant_identity)
-
-        if not target_remote_participant:
-            # El logging de error ya está dentro de find_target_participant_in_room si usa el timeout
-            logging.error(f"Participante objetivo '{target_participant_identity}' no encontrado. Terminando job.")
-            if http_session and not http_session.closed: await http_session.close()
-            await job.shutdown() # Asegurar shutdown antes de salir
+        # Preparar http_session y base_url
+        http_session = aiohttp.ClientSession() # Crear nueva sesión aiohttp
+        base_url = os.getenv("NEXT_PUBLIC_APP_API_URL")
+        if not base_url:
+            logging.error("CRÍTICO: La variable de entorno NEXT_PUBLIC_APP_API_URL no está configurada. "
+                          "No se podrán guardar mensajes. Abortando job.")
+            # http_session se cerrará en el bloque finally
             return
         
-        logging.info(f"Participante objetivo '{target_remote_participant.identity}' encontrado/asignado.")
-
-        # Crear la instancia de MariaVoiceAgent
+        # ⑤ Instancia y arranca el agente apuntando al RemoteParticipant
+        logging.info(f"Instanciando MariaVoiceAgent para el usuario '{username}' (ID: {user_id}) "
+                     f"atendiendo al participante '{target_remote_participant.identity}'.")
         agent = MariaVoiceAgent( 
             http_session=http_session,
             base_url=base_url,
-            target_participant=target_remote_participant, # Pasar el RemoteParticipant encontrado
+            target_participant=target_remote_participant,
             chat_session_id=chat_session_id,
             username=username,
+            # userId=user_id, # Si tu constructor de MariaVoiceAgent lo acepta
             stt_plugin=stt_plugin,
             llm_plugin=llm_plugin,
             tts_plugin=tts_plugin,
             vad_plugin=vad_plugin,
         )
         
-        # Iniciar el agente. Ahora usamos job.participant como el segundo argumento.
-        logging.info(f"Agente Maria configurado. Iniciando para sala: {job.room.name}, como participante: {job.participant.identity}")
-        await agent.start(job.room, job.participant) # Usar job.participant
-        logging.info(f"MariaVoiceAgent iniciado y escuchando en la sala: {job.room.name}")
+        logging.info(f"Iniciando MariaVoiceAgent en la sala '{job.room.name}' para el participante '{target_remote_participant.identity}'.")
+        await agent.start(job.room, target_remote_participant) # El segundo argumento es el 'participant' que el Agent atiende
+        logging.info(f"MariaVoiceAgent iniciado. Escuchando al participante '{target_remote_participant.identity}'.")
 
-        # La creación de AgentSession se maneja internamente por el SDK después de job.connect()
-        # y agent.start(). No es necesario crearla manualmente aquí.
-        # La variable agent_session puede ser eliminada o su uso reconsiderado si es estrictamente necesaria
-        # para _setup_and_start_tavus_avatar.
-        # Por ahora, se asume que Tavus se puede iniciar con job.agent_session o una referencia similar
-        # o que _setup_and_start_tavus_avatar se adaptará.
-
-        # MODIFIED: Configurar e iniciar Tavus Avatar si las credenciales están presentes
+        # ⑥ (Opcional) Inicializa Tavus igual, si lo necesitas
         tavus_api_key = os.getenv("TAVUS_API_KEY")
-        
-        # Revisar cómo se obtiene agent_session para Tavus. 
-        # Si job.connect() y agent.start() configuran job.agent_session, usar eso.
-        # Si agent.session es la referencia correcta, usarla.
-        # Este es un punto crítico para la integración de Tavus.
-        # Por ahora, se asume que el agente mismo maneja su AgentSession o que el SDK la provee vía job.
-        # La firma de _setup_and_start_tavus_avatar espera una AgentSession.
-        # El SDK debería proveer job.agent_session después de job.connect() y agent.start().
+        tavus_replica_id = os.getenv("TAVUS_REPLICA_ID")
+        tavus_persona_id = os.getenv("TAVUS_PERSONA_ID")
 
-        if hasattr(job, 'agent_session') and job.agent_session: # Verificar si el SDK la popula
-            tavus_avatar_session = await _setup_and_start_tavus_avatar(
-                agent_session_instance=job.agent_session, # Usar job.agent_session
-                room=job.room,
-                tavus_api_key=tavus_api_key,
-                tavus_replica_id=tavus_replica_id,
-                tavus_persona_id=tavus_persona_id
-            )
-        # else if agent.session: # Alternativa si el agente la expone
-        #     tavus_avatar_session = await _setup_and_start_tavus_avatar(
-        #         agent_session_instance=agent.session,
-        #         room=job.room,
-        #         tavus_api_key=tavus_api_key,
-        #         tavus_replica_id=tavus_replica_id,
-        #         tavus_persona_id=tavus_persona_id
-        #     )
+        if tavus_api_key and tavus_replica_id and tavus_persona_id:
+            if hasattr(agent, 'session') and agent.session:
+                logging.info("Configurando e iniciando Tavus Avatar...")
+                tavus_session = await _setup_and_start_tavus_avatar(
+                    agent_session_instance=agent.session,
+                    room=job.room, # _setup_and_start_tavus_avatar podría necesitar la room
+                    tavus_api_key=tavus_api_key,
+                    tavus_replica_id=tavus_replica_id,
+                    tavus_persona_id=tavus_persona_id
+                )
+                if tavus_session:
+                    logging.info("Tavus Avatar iniciado exitosamente.")
+                else:
+                    logging.warning("No se pudo iniciar Tavus Avatar (retornó None).")
+            else:
+                logging.warning("Tavus Avatar no se puede iniciar porque agent.session no está disponible o no está inicializada.")
         else:
-            logging.warning("AgentSession no está disponible a través de job.agent_session (o agent.session), no se puede iniciar Tavus Avatar.")
-
-        # El agente está corriendo. El job_entrypoint esperará implícitamente aquí
-        logging.info("Job entrypoint alcanzó el final del bloque try principal. El agente debería estar corriendo o intentando correr.")
-
-    except Exception as e_job_main:
-        # Esta excepción capturaría errores inesperados no manejados en las sub-funciones
-        logging.error(f"Error inesperado en el flujo principal de job_entrypoint: {e_job_main}", exc_info=True)
+            missing_tavus_vars = []
+            if not tavus_api_key: missing_tavus_vars.append("TAVUS_API_KEY")
+            if not tavus_replica_id: missing_tavus_vars.append("TAVUS_REPLICA_ID")
+            if not tavus_persona_id: missing_tavus_vars.append("TAVUS_PERSONA_ID")
+            if missing_tavus_vars:
+                 logging.info(f"Tavus Avatar no se configurará porque faltan variables de entorno: {', '.join(missing_tavus_vars)}.")
         
+        logging.info(f"Job entrypoint para la sala '{job.room.name}' ha completado la configuración. El agente está en ejecución.")
+        # El SDK de LiveKit Agents maneja la espera y el cierre del job.
+        # No se necesita `await job.run()` ni `await job.shutdown()` aquí.
+
+    except Exception as e:
+        logging.error(f"Error fatal e inesperado en el flujo principal de job_entrypoint para la sala '{job.room.name}': {e}", exc_info=True)
+        # El SDK se encargará de la limpieza del job.
     finally:
-        logging.info(f"Iniciando bloque finally para limpieza en job_entrypoint para sala: {job.room.name}")
-        
-        if job.connected: # Solo llamar a shutdown si job está conectado
-            try:
-                logging.info("Ejecutando job.shutdown()...")
-                await job.shutdown()
-                logging.info("job.shutdown() completado.")
-            except Exception as e_shutdown:
-                logging.error(f"Error durante job.shutdown(): {e_shutdown}", exc_info=True)
-
-        # MODIFIED: Descomentado y actualizado bloque de detención de Tavus
-        if tavus_avatar_session:
-            try:
-                logging.info("Deteniendo Tavus AvatarSession...")
-                await tavus_avatar_session.stop()
-                logging.info("Tavus AvatarSession detenida.")
-            except Exception as e_tavus_stop:
-                logging.error(f"Error al detener Tavus AvatarSession: {e_tavus_stop}", exc_info=True)
-
-        # Detener el agente de voz si está activo
-        if agent: # agent puede ser None si falla antes de su inicialización
-            try:
-                logging.info("Deteniendo MariaVoiceAgent...")
-                await agent.stop() 
-                logging.info("MariaVoiceAgent detenido.")
-            except Exception as e_agent_stop:
-                logging.error(f"Error al detener MariaVoiceAgent: {e_agent_stop}", exc_info=True)
-
-        # Marcar sesión como finalizada y solicitar resumen (si chat_session_id existe)
-        if chat_session_id and http_session and not http_session.closed:
-            try:
-                logging.info(f"Marcando sesión {chat_session_id} como finalizada en la API.")
-                async with http_session.put(f"{base_url}/api/sessions/{chat_session_id}") as resp:
-                    if resp.status == 200:
-                        logging.info(f"Sesión {chat_session_id} marcada como finalizada exitosamente.")
-                    else:
-                        error_text = await resp.text()
-                        logging.error(f"Error al marcar sesión {chat_session_id} como finalizada ({resp.status}): {error_text}")
-            except aiohttp.ClientError as e_conn:
-                 logging.error(f"Error de cliente HTTP al finalizar/resumir sesión para {chat_session_id}: {e_conn}", exc_info=True)
-            except Exception as e_session_finalize:
-                logging.error(f"Excepción durante la finalización/resumen de sesión para {chat_session_id}: {e_session_finalize}", exc_info=True)
-        
-        # Cerrar la sesión aiohttp si fue creada
+        logging.info(f"Ejecutando bloque finally para limpieza en job_entrypoint para la sala: {job.room.name}")
         if http_session and not http_session.closed:
-            try:
-                logging.info("Cerrando ClientSession de aiohttp...")
-                await http_session.close()
-                logging.info("ClientSession de aiohttp cerrada.")
-            except Exception as e_close_session:
-                logging.error(f"Error al cerrar ClientSession de aiohttp: {e_close_session}", exc_info=True)
-        
-        logging.info(f"Limpieza finalizada en job_entrypoint para la sala: {job.room.name}")
+            await http_session.close()
+        logging.info("Sesión aiohttp cerrada en job_entrypoint.") # <--- INDENTACIÓN CORRECTA
+        # No llamar a job.shutdown() aquí. El SDK lo maneja.
+        logging.info(f"Job entrypoint para la sala '{job.room.name}' ha finalizado su ejecución (normal o por error).")
+
+# La función main() como la tenías antes de la refactorización de job_entrypoint no es necesaria
+# si volvemos a la forma directa de cli.run_app(opts).
+# Mantenemos la estructura if __name__ == "__main__" para ejecutar el worker.
+
+# async def main():
+#    logging.info("Configurando WorkerOptions para LiveKit Agent...")
+#    
+#    livekit_url = os.getenv("LIVEKIT_URL")
+#    livekit_api_key = os.getenv("LIVEKIT_API_KEY")
+#    livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
+#
+#    if not all([livekit_url, livekit_api_key, livekit_api_secret]):
+#        logging.critical("CRÍTICO: Las variables de entorno LIVEKIT_URL, LIVEKIT_API_KEY, y LIVEKIT_API_SECRET son obligatorias y no están todas configuradas. El worker no puede iniciarse.")
+#        return
+#
+#    worker_options = WorkerOptions(
+#        # request_timeout=30, # Eliminado según la indicación
+#    )
+#    
+#    # Registrar el entrypoint del job. El nombre "default_agent" es un ejemplo.
+#    cli.register_agent(worker_options=worker_options, job_request_cb=job_entrypoint) 
+#    
+#    logging.info(f"Iniciando el worker de LiveKit Agents. Conectando a: {livekit_url}")
+#    # El CLI usará las variables de entorno para la conexión si no se pasan argumentos.
+#    await cli.run() # Esto es bloqueante y maneja el ciclo de vida del worker.
+
 
 if __name__ == "__main__":
+    logging.info("Configurando WorkerOptions y ejecutando la aplicación CLI...")
+    # Asegúrate que LIVEKIT_URL, LIVEKIT_API_KEY, y LIVEKIT_API_SECRET están disponibles como variables de entorno
+    # o pasadas como argumentos de línea de comandos, ya que cli.run_app las usará internamente.
+    livekit_url = os.getenv("LIVEKIT_URL")
+    livekit_api_key = os.getenv("LIVEKIT_API_KEY")
+    livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
+
+    if not all([livekit_url, livekit_api_key, livekit_api_secret]):
+        logging.critical("CRÍTICO: Las variables de entorno LIVEKIT_URL, LIVEKIT_API_KEY, y LIVEKIT_API_SECRET deben estar configuradas para que el worker pueda conectarse. Terminando.")
+        # No es necesario salir explícitamente aquí si cli.run_app maneja esto, pero es una buena práctica verificar.
+    else:
+        logging.info(f"Variables de LiveKit encontradas. URL: {livekit_url[:20]}... Worker se conectará usando estas credenciales o los argumentos CLI.")
+
     opts = WorkerOptions(
-        entrypoint_fnc=job_entrypoint,
+        entrypoint_fnc=job_entrypoint, # Corregido entrypoint_fnc aquí
         worker_type=WorkerType.ROOM,
-        port=0  # Deshabilita el health-check HTTP y el servidor de tracing
+        port=int(os.getenv("LIVEKIT_AGENT_PORT", 0)) # Usar variable de entorno para el puerto, default 0 (deshabilitado)
     )
-    cli.run_app(opts)
+
+    # Ya no se usa asyncio.run(main()) directamente, sino cli.run_app(opts)
+    # que maneja su propio bucle de eventos.
+    try:
+        logging.info("Iniciando cli.run_app(opts)...")
+        cli.run_app(opts)
+        # cli.run_app es bloqueante y maneja el ciclo de vida del worker.
+    except KeyboardInterrupt:
+        logging.info("Proceso interrumpido por el usuario (Ctrl+C) durante cli.run_app. Finalizando...")
+    except Exception as e:
+        logging.critical(f"Error crítico irrecuperable al ejecutar cli.run_app: {e}", exc_info=True)
+    finally:
+        logging.info("Proceso principal del worker (cli.run_app) finalizado.")
