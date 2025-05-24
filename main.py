@@ -60,7 +60,7 @@ class AppSettings(BaseSettings):
     # Tavus Avatar
     tavus_api_key: Optional[str] = Field(None, env='TAVUS_API_KEY')
     tavus_replica_id: Optional[str] = Field(None, env='TAVUS_REPLICA_ID')
-    tavus_persona_id: Optional[str] = Field(None, env='TAVUS_PERSONA_ID') # Añadido desde el uso en main.py
+    tavus_persona_id: Optional[str] = Field(None, env='TAVUS_PERSONA_ID')
 
     # Deepgram STT
     deepgram_api_key: str = Field(..., env='DEEPGRAM_API_KEY')
@@ -76,7 +76,7 @@ class AppSettings(BaseSettings):
     class Config:
         env_file = '.env'
         case_sensitive = False
-        extra = Extra.ignore
+        extra = 'ignore'
 
 # Instancia global de configuración
 settings = AppSettings()
