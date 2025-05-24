@@ -21,6 +21,7 @@ from livekit.agents import (
     Agent,
     WorkerType,
     RoomOutputOptions,
+    RoomInputOptions,
 )
 from livekit.agents.llm import ChatMessage # Importar ChatMessage
 from livekit.rtc import RemoteParticipant, Room
@@ -675,6 +676,15 @@ async def job_entrypoint(job: JobContext):
         )
         logging.info("AgentSession creada.")
 
+        # Evento para manejar el fin de la sesión y mantener el job vivo
+        session_ended_event = asyncio.Event()
+
+        def on_session_end_handler(payload: Any): # payload podría contener info de la razón del cierre
+            logging.info(f"Evento 'session_ended' recibido. Payload: {payload}")
+            session_ended_event.set()
+
+        agent_session.on("session_ended", on_session_end_handler)
+
         tavus_avatar_session: Optional[tavus.AvatarSession] = None
         # La condición para configurar Tavus ahora usa directamente settings
         tavus_configured = bool(settings.tavus_api_key and settings.tavus_replica_id) #
@@ -694,9 +704,18 @@ async def job_entrypoint(job: JobContext):
         else:
             logging.info("No se configuraron las variables de entorno para el avatar de Tavus. Saltando.")
 
-        # Configurar RoomOutputOptions basado en si Tavus está activo
-        room_output_options = RoomOutputOptions(audio_enabled=not tavus_configured)
-        logging.info(f"RoomOutputOptions configurado: audio_enabled={room_output_options.audio_enabled}")
+        # Configurar RoomInputOptions y RoomOutputOptions como especificaste
+        room_input_options = RoomInputOptions(
+            text_enabled=False,    # deshabilita el canal de texto "push-to-talk"
+            audio_enabled=True,    # habilita el micrófono para STT
+            video_enabled=False    # no envías video desde tu cámara
+        )
+        room_output_options = RoomOutputOptions(
+            transcription_enabled=True,  # suscribe la pista de texto
+            audio_enabled=True            # suscribe la pista de audio TTS
+        )
+        logging.info(f"RoomInputOptions configurado: audio_enabled={room_input_options.audio_enabled}, video_enabled={room_input_options.video_enabled}, text_enabled={room_input_options.text_enabled}")
+        logging.info(f"RoomOutputOptions configurado: audio_enabled={room_output_options.audio_enabled}, transcription_enabled={room_output_options.transcription_enabled}")
 
         # Inicializar el agente principal (MariaVoiceAgent)
         agent = MariaVoiceAgent(
@@ -708,29 +727,39 @@ async def job_entrypoint(job: JobContext):
         )
 
         # Iniciar la lógica del agente a través de AgentSession
-        logging.info(f"Iniciando MariaVoiceAgent a través de AgentSession para el participante: {target_remote_participant.identity}")
+        logging.info(
+            "Iniciando MariaVoiceAgent a través de AgentSession para el participante: %s",
+            target_remote_participant.identity,
+        )
         try:
             await agent_session.start(
                 agent=agent,
                 room=job.room,
-                participant=target_remote_participant,
-                room_output_options=room_output_options
+                room_input_options=room_input_options, # Añadido
+                room_output_options=room_output_options, # Modificado/Añadido
             )
+            
+            # Mantener el job vivo hasta que la sesión del agente termine
+            logging.info("AgentSession.start() completado. Esperando a que el evento 'session_ended' se active...")
+            await session_ended_event.wait()
+            logging.info("Evento 'session_ended' activado. El job_entrypoint continuará para finalizar.")
 
-            # Mantener el job_entrypoint activo hasta que la sesión del agente termine
-            logging.info("AgentSession.start() completado. Esperando a que el agente finalice...")
-            await agent_session.wait_for_agent_completed()
-            logging.info("AgentSession ha completado su ejecución (wait_for_agent_completed).")
-
-        except Exception as e_session_start:
-            logging.critical(f"Error crítico durante agent_session.start() o wait_for_agent_completed(): {e_session_start}", exc_info=True)
+        except Exception as e:
+            logging.critical(
+                "Error crítico durante agent_session.start(): %s",
+                e,
+                exc_info=True,
+            )
         finally:
-            logging.info("MariaVoiceAgent (y su AgentSession) ha terminado o encontrado un error. job_entrypoint finalizando.")
-            if tavus_avatar_session:
-                logging.info("Deteniendo Tavus AvatarSession...")
-                await tavus_avatar_session.stop() # Asegurarse de detener Tavus si se inició
-            await job.disconnect() # Asegurarse de desconectar del job
-            logging.info("Desconectado de job.connect().")
+            logging.info(
+                "MariaVoiceAgent (y su AgentSession) ha terminado o encontrado un error. job_entrypoint finalizando."
+            )
+            # En lugar de ctx.shutdown(), usamos job.disconnect() para cerrar la conexión del job actual.
+            # Esto es más limpio y específico para el contexto del job.
+            # ctx.shutdown() podría usarse si quisiéramos cerrar todo el worker, no sólo este job.
+            logging.info("Desconectando el Job de LiveKit...")
+            job.shutdown(reason="Dev mode complete") # Cambio a shutdown
+            logging.info("Job desconectado.")
 
 if __name__ == "__main__":
     logging.info("Configurando WorkerOptions y ejecutando la aplicación CLI...")
