@@ -10,27 +10,79 @@ from dotenv import load_dotenv
 import aiohttp # Para llamadas HTTP asíncronas
 
 from livekit.agents import (
-    JobContext, 
+    JobContext,
     WorkerOptions,
     cli, # Importar cli como módulo desde livekit.agents
-    stt, 
+    stt,
     llm, # Mantener esta importación
-    tts, 
-    vad, 
+    tts,
+    vad,
     AgentSession,
     Agent,
     WorkerType,
     RoomOutputOptions,
 )
+from livekit.agents.llm import ChatMessage # Importar ChatMessage
 from livekit.rtc import RemoteParticipant, Room
 from livekit.plugins import deepgram, openai, silero, cartesia, tavus
-# Eliminar cualquier otra importación conflictiva de LLMStreamEvent etc. que hayamos intentado
 
-# Importar la configuración centralizada
-from .config import settings # Nueva importación
+# Contenido de config.py movido aquí
+from typing import Optional
+from pydantic_settings import BaseSettings
+from pydantic import Field, Extra, field_validator
 
-# Cargar variables de entorno
-# load_dotenv()
+class AppSettings(BaseSettings):
+    """
+    Configuración de la aplicación cargada desde variables de entorno.
+    """
+    # LiveKit
+    livekit_url: str = Field(..., env='LIVEKIT_URL')
+    livekit_api_key: str = Field(..., env='LIVEKIT_API_KEY')
+    livekit_api_secret: str = Field(..., env='LIVEKIT_API_SECRET')
+    livekit_agent_port: int = Field(8000, env='LIVEKIT_AGENT_PORT')
+
+    # Backend API
+    api_base_url: str = Field(..., env='API_BASE_URL')
+
+    # OpenAI
+    openai_api_key: str = Field(..., env='OPENAI_API_KEY')
+    openai_model: str = Field('gpt-4o-mini', env='OPENAI_MODEL')
+
+    # Cartesia TTS
+    cartesia_api_key: str = Field(..., env='CARTESIA_API_KEY')
+    cartesia_model: str = Field('sonic-spanish', env='CARTESIA_MODEL')
+    cartesia_voice_id: str = Field(..., env='CARTESIA_VOICE_ID')
+    cartesia_language: str = Field('es', env='CARTESIA_LANGUAGE')
+    cartesia_speed: float = Field(1.0, env='CARTESIA_SPEED')
+    cartesia_emotion: Optional[str] = Field(None, env='CARTESIA_EMOTION')
+
+    # Tavus Avatar
+    tavus_api_key: Optional[str] = Field(None, env='TAVUS_API_KEY')
+    tavus_replica_id: Optional[str] = Field(None, env='TAVUS_REPLICA_ID')
+    tavus_persona_id: Optional[str] = Field(None, env='TAVUS_PERSONA_ID') # Añadido desde el uso en main.py
+
+    # Deepgram STT
+    deepgram_api_key: str = Field(..., env='DEEPGRAM_API_KEY')
+    deepgram_model: str = Field('nova-2', env='DEEPGRAM_MODEL')
+
+    @field_validator('livekit_agent_port', mode='before')
+    def _clean_port(cls, v):
+        # Elimina cualquier comentario tras '#' y espacios
+        if isinstance(v, str):
+            v = v.split('#', 1)[0].strip()
+        return v
+
+    class Config:
+        env_file = '.env'
+        case_sensitive = False
+        extra = Extra.ignore
+
+# Instancia global de configuración
+settings = AppSettings()
+# Fin del contenido de config.py
+
+# Cargar variables de entorno (si .env file es usado por AppSettings, esto podría ser redundante o necesitar ajuste)
+# load_dotenv() # AppSettings ya carga desde .env
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -59,7 +111,7 @@ except Exception as e:
     MARIA_SYSTEM_PROMPT_TEMPLATE = "Eres una asistente virtual llamada María. Tu objetivo es ayudar con la ansiedad. Saluda al usuario {username}."
 
 class MariaVoiceAgent(Agent):
-    def __init__(self, 
+    def __init__(self,
                  http_session: aiohttp.ClientSession,
                  base_url: str,
                  target_participant: RemoteParticipant, # Útil para logging o referencia interna
@@ -78,18 +130,18 @@ class MariaVoiceAgent(Agent):
             username: Nombre del usuario.
             **kwargs: Argumentos adicionales para la clase base Agent.
         """
-        
+
         system_prompt = MARIA_SYSTEM_PROMPT_TEMPLATE.format(
-            username=username, 
-            user_greeting=""
-        )
-        system_prompt = system_prompt.replace("{latest_summary}", "No hay información previa relevante.").strip()
+            username=username,
+            user_greeting="",
+            latest_summary="No hay información previa relevante."
+        ).strip()
 
         # Los plugins se configuran en AgentSession, por lo que no se pasan a super()
-        super().__init__(instructions=system_prompt, 
+        super().__init__(instructions=system_prompt,
                          # stt, llm, tts, vad ya no se pasan aquí
                          **kwargs)
-        
+
         self._http_session = http_session
         self._base_url = base_url
         self._chat_session_id = chat_session_id
@@ -133,7 +185,7 @@ class MariaVoiceAgent(Agent):
             data_str = payload.decode('utf-8')
             message_data = json.loads(data_str)
             message_type = message_data.get("type")
-            
+
             logging.debug(f"DataChannel recibido del frontend: Tipo='{message_type}', Participante='{participant.identity if participant else 'N/A'}', Payload='{data_str}'")
 
             if message_type == "submit_user_text":
@@ -164,14 +216,14 @@ class MariaVoiceAgent(Agent):
         if not self._chat_session_id:
             logging.warning("chat_session_id no está disponible, no se puede guardar el mensaje.")
             return
-        
+
         if not message_id:
             message_id = f"{sender}-{uuid.uuid4()}"
 
         payload = {
             "id": message_id,
             "chatSessionId": self._chat_session_id,
-            "sender": sender, 
+            "sender": sender,
             "content": content,
         }
 
@@ -192,22 +244,22 @@ class MariaVoiceAgent(Agent):
                         logging.warning(f"Intento {attempts}/{SAVE_MESSAGE_MAX_RETRIES} fallido al guardar mensaje (ID: {message_id}). Status: {resp.status}. Error: {error_text}")
                         if attempts == SAVE_MESSAGE_MAX_RETRIES:
                             logging.error(f"Error final del servidor ({resp.status}) al guardar mensaje (ID: {message_id}) después de {SAVE_MESSAGE_MAX_RETRIES} intentos: {error_text}")
-                            return 
+                            return
                         await asyncio.sleep(SAVE_MESSAGE_RETRY_DELAY * (2**(attempts - 1)))
                     else: # Errores de cliente (4xx) u otros no reintentables por código de estado
                         logging.error(f"Error no reintentable del cliente ({resp.status}) al guardar mensaje (ID: {message_id}): {error_text}")
                         return
-            
+
             except aiohttp.ClientError as e_http: # Errores de red/conexión de aiohttp
                 logging.warning(f"Excepción de red en intento {attempts}/{SAVE_MESSAGE_MAX_RETRIES} al guardar mensaje (ID: {message_id}): {e_http}")
                 if attempts == SAVE_MESSAGE_MAX_RETRIES:
                     logging.error(f"Excepción final de red al guardar mensaje (ID: {message_id}) después de {SAVE_MESSAGE_MAX_RETRIES} intentos: {e_http}", exc_info=True)
                     return
                 await asyncio.sleep(SAVE_MESSAGE_RETRY_DELAY * (2**(attempts - 1)))
-            
+
             except Exception as e: # Otras excepciones inesperadas durante el POST
                 logging.error(f"Excepción inesperada en intento {attempts} al guardar mensaje (ID: {message_id}): {e}", exc_info=True)
-                return 
+                return
 
         logging.error(f"Todos los {SAVE_MESSAGE_MAX_RETRIES} intentos para guardar el mensaje (ID: {message_id}) fallaron.")
 
@@ -268,23 +320,21 @@ class MariaVoiceAgent(Agent):
                 logging.error(f"Error al procesar sugerencia de video: {e}", exc_info=True)
         return text, video_payload
 
-    async def _on_conversation_item_added(self, item: llm.LLMStreamEvent):
+    async def _on_conversation_item_added(self, item: llm.ChatMessage):
         """
         Callback que se ejecuta cuando se añade un nuevo item a la conversación por el LLM.
         Procesa la respuesta del asistente, la guarda, y gestiona la reproducción de TTS.
 
         Args:
-            item: El evento de stream del LLM.
+            item: El mensaje de chat añadido a la conversación.
         """
-        if item.type == llm.LLMStreamEventType.MESSAGE_END and \
-           item.chat_message and \
-           item.chat_message.role == llm.ChatRole.ASSISTANT:
-            ai_original_response_text = item.chat_message.content
+        if item.role == llm.ChatRole.ASSISTANT and item.content:
+            ai_original_response_text = item.content
             if not ai_original_response_text:
                 logging.warning(f"Mensaje de asistente (ID: {item.id}) recibido sin contenido.")
                 return
 
-            ai_message_id = item.id
+            ai_message_id = str(item.id) if item.id else f"assistant-{uuid.uuid4()}"
             logging.info(f"Assistant message added (ID: {ai_message_id}): '{ai_original_response_text}'")
 
             processed_text_for_tts, is_closing_message = self._process_closing_message(ai_original_response_text)
@@ -303,10 +353,10 @@ class MariaVoiceAgent(Agent):
                 "text": ai_original_response_text,
                 "suggestedVideo": video_payload if video_payload else {}
             })
-            
+
             metadata_for_speak_call = {
                 "messageId": ai_message_id,
-                "is_closing_message": is_closing_message 
+                "is_closing_message": is_closing_message
             }
 
             if self._initial_greeting_text is None:
@@ -316,7 +366,7 @@ class MariaVoiceAgent(Agent):
                 logging.info(f"Reproduciendo TTS para mensaje de IA (ID: {ai_message_id}): '{processed_text_for_tts[:100]}...'")
                 await self.session.speak(processed_text_for_tts, metadata=metadata_for_speak_call)
 
-    async def on_tts_playback_started(self, event: tts.TTSPlaybackStarted):
+    async def on_tts_playback_started(self, event: Any):
         """Callback cuando el TTS comienza a reproducirse."""
         ai_message_id = getattr(event, 'item_id', None) # Usar getattr para acceso seguro
         if ai_message_id:
@@ -325,18 +375,18 @@ class MariaVoiceAgent(Agent):
         else:
             logging.warning("on_tts_playback_started: event.item_id is missing.")
 
-    async def on_tts_playback_finished(self, event: tts.TTSPlaybackFinished):
+    async def on_tts_playback_finished(self, event: Any):
         """Callback cuando el TTS termina de reproducirse."""
         ai_message_id = getattr(event, 'item_id', None) # Usar getattr para acceso seguro
         if ai_message_id:
             logging.debug(f"TTS Playback Finished for item_id: {ai_message_id}, metadata from event: {getattr(event, 'metadata', None)}")
-            
+
             is_closing_message = None
             event_metadata = getattr(event, 'metadata', None)
             # Intentar obtener is_closing_message desde event.metadata (poblado por nuestra llamada a speak)
             if event_metadata and "is_closing_message" in event_metadata:
                 is_closing_message = event_metadata["is_closing_message"]
-            
+
             # Fallback a _ai_message_meta si no está en event.metadata
             # (especialmente útil para el saludo inicial donde no llamamos a speak directamente)
             if is_closing_message is None:
@@ -346,7 +396,7 @@ class MariaVoiceAgent(Agent):
                 else:
                     is_closing_message = False # Default si no se encuentra
                     logging.warning(f"on_tts_playback_finished: No se encontró metadata para {ai_message_id} en _ai_message_meta.")
-            
+
             await self._send_custom_data("tts_ended", {
                 "messageId": ai_message_id,
                 "isClosing": is_closing_message if isinstance(is_closing_message, bool) else False
@@ -389,7 +439,7 @@ def parse_participant_metadata(metadata_str: Optional[str]) -> Dict[str, Optiona
         if target_participant_identity is not None and not isinstance(target_participant_identity, str):
             logging.warning(f"targetParticipantIdentity esperado como string, se recibió {type(target_participant_identity)}. Se usará None.")
             target_participant_identity = None
-            
+
         return {
             "userId": user_id,
             "username": username,
@@ -415,38 +465,38 @@ async def _setup_plugins(job: JobContext) -> Tuple[Optional[stt.STT], Optional[l
     Returns:
         Una tupla con las instancias de los plugins (STT, LLM, VAD, TTS).
         Retorna Nones si hay un error crítico durante la configuración.
-    
+
     Raises:
         Puede propagar excepciones si las variables de entorno requeridas por los plugins
         (ej. claves API) no están configuradas.
     """
     try:
         logging.info("Configurando plugins del agente...")
-        stt_plugin = deepgram.STT(model=settings.deepgram_model, language="es", interim_results=False)
-        logging.debug(f"STT plugin (Deepgram {settings.deepgram_model} es) configurado.")
+        stt_plugin = deepgram.STT(model=settings.deepgram_model, language="es", interim_results=False) #
+        logging.debug(f"STT plugin (Deepgram {settings.deepgram_model} es) configurado.") #
 
-        llm_plugin = openai.LLM(model=settings.openai_chat_model)
-        logging.debug(f"LLM plugin (OpenAI {settings.openai_chat_model}) configurado.")
+        llm_plugin = openai.LLM(model=settings.openai_model) #
+        logging.debug(f"LLM plugin (OpenAI {settings.openai_model}) configurado.") #
 
         vad_plugin = silero.VAD.load(
-            pre_speech_pad_ms=100, 
-            post_speech_pad_ms=500, 
-            positive_speech_threshold=0.5, 
-            min_speech_duration_ms=250, 
-            min_silence_duration_ms=700
+            prefix_padding_duration=0.1,    # 100ms
+            min_silence_duration=0.7,       # 700ms (reemplaza min_silence_duration_ms y post_speech_pad_ms)
+            activation_threshold=0.5,       # Mismo valor que positive_speech_threshold
+            min_speech_duration=0.25        # 250ms
+            # sample_rate y force_cpu usarán los valores por defecto (16000 y True respectivamente)
         )
         logging.debug(f"VAD plugin (Silero) configurado.")
 
         tts_cartesia_plugin = cartesia.TTS(
-            api_key=settings.cartesia_api_key,
-            model=settings.cartesia_model,
-            voice_id=settings.cartesia_voice_id,
-            language=settings.cartesia_language,
-            speed=settings.cartesia_speed,
-            emotion=settings.cartesia_emotion,
+            api_key=settings.cartesia_api_key, #
+            model=settings.cartesia_model, #
+            voice=settings.cartesia_voice_id, # Cambiado de voice_id a voice
+            language=settings.cartesia_language, #
+            speed=settings.cartesia_speed, #
+            emotion=settings.cartesia_emotion, #
         )
-        logging.debug(f"TTS plugin (Cartesia {settings.cartesia_model}) configurado con voice_id: {tts_cartesia_plugin.voice_id}")
-        
+        logging.debug(f"TTS plugin (Cartesia {settings.cartesia_model}) configurado correctamente.")
+
         logging.info("Todos los plugins configurados exitosamente.")
         return stt_plugin, llm_plugin, vad_plugin, tts_cartesia_plugin
     except Exception as e_plugins:
@@ -456,18 +506,18 @@ async def _setup_plugins(job: JobContext) -> Tuple[Optional[stt.STT], Optional[l
 async def _setup_and_start_tavus_avatar(
     agent_session_instance: AgentSession,
     room: 'livekit.Room',
-    app_settings: 'AppSettings' # Nuevo parámetro para acceder a la config
+    app_settings: 'AppSettings'
 ) -> Optional[tavus.AvatarSession]:
     """Configura e inicia el avatar de Tavus si las credenciales están presentes en app_settings."""
-    if not (app_settings.tavus_api_key and app_settings.tavus_replica_id):
-        logging.warning("Faltan TAVUS_API_KEY o TAVUS_REPLICA_ID en la configuración. El avatar de Tavus no se iniciará.")
+    if not (app_settings.tavus_api_key and app_settings.tavus_replica_id): #
+        logging.warning("Faltan TAVUS_API_KEY o TAVUS_REPLICA_ID en la configuración. El avatar de Tavus no se iniciará.") #
         return None
-    
-    logging.info(f"Configurando Tavus AvatarSession con Replica ID: {app_settings.tavus_replica_id} y Persona ID: {app_settings.tavus_persona_id if app_settings.tavus_persona_id else 'Default'}")
+
+    logging.info(f"Configurando Tavus AvatarSession con Replica ID: {app_settings.tavus_replica_id} y Persona ID: {app_settings.tavus_persona_id if app_settings.tavus_persona_id else 'Default'}") #
     tavus_avatar = tavus.AvatarSession(
-        persona_id=app_settings.tavus_persona_id if app_settings.tavus_persona_id else None, # Asegurar que None se pasa si está vacío
-        replica_id=app_settings.tavus_replica_id,
-        api_key=app_settings.tavus_api_key,
+        persona_id=app_settings.tavus_persona_id if app_settings.tavus_persona_id else None, #
+        replica_id=app_settings.tavus_replica_id, #
+        api_key=app_settings.tavus_api_key, #
     )
     try:
         await tavus_avatar.start(agent_session=agent_session_instance, room=room)
@@ -544,7 +594,7 @@ async def job_entrypoint(job: JobContext):
              información de la sala y metadatos.
     """
     logging.info(f"Iniciando job_entrypoint para la sala: {job.room.name}")
-    logging.info(f"Metadata del Job: {job.metadata}")
+    logging.info(f"Metadata del Job (job.job.metadata): {job.job.metadata}")
 
     # Conectar al JobContext (gestionado por LiveKit)
     try:
@@ -555,36 +605,48 @@ async def job_entrypoint(job: JobContext):
         return
 
     # Parsear metadata del job para obtener chat_session_id, username, etc.
-    parsed_metadata = parse_participant_metadata(job.metadata)
+    parsed_metadata = parse_participant_metadata(job.job.metadata)
     chat_session_id = parsed_metadata.get("chatSessionId")
     username = parsed_metadata.get("username", "Usuario") # Default a "Usuario" si no se provee
 
+    # MODIFICACIÓN PARA MODO DEV SIN METADATA FLAG
+    # Si no se encontró chatSessionId (lo que ocurre si job.job.metadata es None o no lo contiene),
+    # asignamos un valor por defecto. Esto es útil para desarrollo local con `python main.py dev`
+    # sin necesidad de pasar el flag --metadata.
     if not chat_session_id:
-        logging.critical("chatSessionId no encontrado en la metadata. Abortando.")
+        default_dev_session_id = "dev_default_chat_session_id_123"
+        logging.warning(
+            f"chatSessionId no se encontró en la metadata del job (job.job.metadata era '{job.job.metadata}'). "
+            f"Asignando valor por defecto para desarrollo: '{default_dev_session_id}'."
+        )
+        chat_session_id = default_dev_session_id
+        # Opcionalmente, también un nombre de usuario por defecto si no vino y se quedó el genérico.
+        if username == "Usuario" and not parsed_metadata.get("username"):
+             default_dev_username = "DevUser"
+             logging.info(f"Asignando nombre de usuario por defecto para desarrollo: '{default_dev_username}'.")
+             username = default_dev_username
+
+    if not chat_session_id:
+        logging.critical("chatSessionId no encontrado en la metadata y no se pudo establecer un valor por defecto. Abortando.")
         return
 
-    logging.info(f"JobContext - Room ID: {job.room.sid}, Room Name: {job.room.name}")
-    logging.info(f"ChatSessionId: {chat_session_id}, Username: {username}")
+    # Obtener Room SID de forma asíncrona
+    room_sid = await job.room.sid
+    logging.info(f"JobContext - Room ID: {room_sid}, Room Name: {job.room.name}")
+    logging.info(f"ChatSessionId: {chat_session_id}, Username: {username if username else '(No especificado)'}") # Asegurar que username no sea None en el log
 
     # Configurar plugins
     stt_plugin, llm_plugin, vad_plugin, tts_plugin = await _setup_plugins(job) # job puede ser necesario para contexto de plugins
     if not all([stt_plugin, llm_plugin, vad_plugin, tts_plugin]):
         logging.critical("Faltan uno o más plugins esenciales. Abortando.")
         return
-        
-    # Obtener API_BASE_URL
-    # api_base_url = os.getenv("API_BASE_URL") # Eliminado
-    # if not api_base_url: # Eliminado
-    #     logging.critical("API_BASE_URL no está configurada. Abortando.") # Eliminado
-    #     return # Eliminado
-    # logging.info(f"API_BASE_URL configurada: {api_base_url}") # Ya no es necesario loguear aquí, se hace en AppSettings
 
     # Obtener la identidad local
     local_id = job.room.local_participant.identity
     logging.info(f"Agente local identity: {local_id}")
 
     # Auto-descubrimiento del participante remoto
-    participants = list(job.room.participants.values())
+    participants = list(job.room.remote_participants.values())
     candidates = [p for p in participants if p.identity != local_id]
     target_remote_participant: Optional[RemoteParticipant] = None
 
@@ -599,7 +661,7 @@ async def job_entrypoint(job: JobContext):
             await job.disconnect() # Desconectar si no hay participante
             return
         logging.info(f"Auto-descubrimiento por espera: elegido participante {target_remote_participant.identity}")
-    
+
     # Crear sesión HTTP para que MariaVoiceAgent la use para guardar mensajes
     async with aiohttp.ClientSession() as http_session:
         # Crear AgentSession y pasarle los plugins
@@ -613,22 +675,16 @@ async def job_entrypoint(job: JobContext):
         )
         logging.info("AgentSession creada.")
 
-        # Configuración y arranque del avatar de Tavus (opcional)
-        # Ya no se obtienen las variables de Tavus aquí directamente
-        # tavus_api_key = settings.tavus_api_key
-        # tavus_replica_id = settings.tavus_replica_id
-        # tavus_persona_id = settings.tavus_persona_id
-        
         tavus_avatar_session: Optional[tavus.AvatarSession] = None
         # La condición para configurar Tavus ahora usa directamente settings
-        tavus_configured = bool(settings.tavus_api_key and settings.tavus_replica_id)
+        tavus_configured = bool(settings.tavus_api_key and settings.tavus_replica_id) #
 
         if tavus_configured:
             logging.info("Intentando configurar y arrancar el avatar de Tavus...")
             tavus_avatar_session = await _setup_and_start_tavus_avatar(
-                agent_session_instance=agent_session, 
+                agent_session_instance=agent_session,
                 room=job.room,
-                app_settings=settings # Pasar la instancia de settings
+                app_settings=settings # Pasar la instancia de settings #
             )
             if tavus_avatar_session:
                 logging.info("Avatar de Tavus configurado y arrancado.")
@@ -643,25 +699,24 @@ async def job_entrypoint(job: JobContext):
         logging.info(f"RoomOutputOptions configurado: audio_enabled={room_output_options.audio_enabled}")
 
         # Inicializar el agente principal (MariaVoiceAgent)
-        # Ya no se le pasan los plugins STT, LLM, TTS, VAD
         agent = MariaVoiceAgent(
             http_session=http_session,
-            base_url=settings.api_base_url, # Usar settings
+            base_url=settings.api_base_url, # Usar settings #
             target_participant=target_remote_participant,
             chat_session_id=chat_session_id,
             username=username,
         )
-        
+
         # Iniciar la lógica del agente a través de AgentSession
         logging.info(f"Iniciando MariaVoiceAgent a través de AgentSession para el participante: {target_remote_participant.identity}")
         try:
             await agent_session.start(
-                agent=agent, 
-                room=job.room, 
-                participant=target_remote_participant, 
+                agent=agent,
+                room=job.room,
+                participant=target_remote_participant,
                 room_output_options=room_output_options
             )
-            
+
             # Mantener el job_entrypoint activo hasta que la sesión del agente termine
             logging.info("AgentSession.start() completado. Esperando a que el agente finalice...")
             await agent_session.wait_for_agent_completed()
@@ -679,38 +734,20 @@ async def job_entrypoint(job: JobContext):
 
 if __name__ == "__main__":
     logging.info("Configurando WorkerOptions y ejecutando la aplicación CLI...")
-    # Asegúrate que LIVEKIT_URL, LIVEKIT_API_KEY, y LIVEKIT_API_SECRET están disponibles como variables de entorno
-    # o pasadas como argumentos de línea de comandos, ya que cli.run_app las usará internamente.
-    # livekit_url = os.getenv("LIVEKIT_URL") # Eliminado
-    # livekit_api_key = os.getenv("LIVEKIT_API_KEY") # Eliminado
-    # livekit_api_secret = os.getenv("LIVEKIT_API_SECRET") # Eliminado
 
-    # La validación de las variables críticas de LiveKit ahora se hace en AppSettings al instanciar `settings`.
-    # Si `settings` se importa correctamente, estas variables ya han sido validadas (o la app falló).
-    # if not all([settings.livekit_url, settings.livekit_api_key, settings.livekit_api_secret]): # Condición actualizada/eliminada
-    #     logging.critical("CRÍTICO: Las variables de entorno LIVEKIT_URL, LIVEKIT_API_KEY, y LIVEKIT_API_SECRET deben estar configuradas para que el worker pueda conectarse. Terminando.")
-    #     # No es necesario salir explícitamente aquí si cli.run_app maneja esto, pero es una buena práctica verificar.
-    # El log anterior puede ser redundante si AppSettings ya lo hace, o se puede ajustar.
-    # Por ahora, lo dejamos para confirmar que settings se carga, pero la validación crítica ya ocurrió.
-    logging.info(f"Configuración de LiveKit cargada. URL: {settings.livekit_url[:20]}... (verificación crítica ya hecha en config.py)")
+    logging.info(f"Configuración de LiveKit cargada. URL: {settings.livekit_url[:20]}... (verificación crítica ya hecha por AppSettings)") #
 
     opts = WorkerOptions(
-        entrypoint_fnc=job_entrypoint, # Corregido entrypoint_fnc aquí
+        entrypoint_fnc=job_entrypoint,
         worker_type=WorkerType.ROOM,
-        port=settings.livekit_agent_port # Usar settings
+        port=settings.livekit_agent_port # Usar settings #
     )
 
-    # Ya no se usa asyncio.run(main()) directamente, sino cli.run_app(opts)
-    # que maneja su propio bucle de eventos.
     try:
         logging.info("Iniciando cli.run_app(opts)...")
-        # `settings` ya habrá lanzado una excepción si las variables críticas no estaban.
-        # cli.run_app también podría fallar si LIVEKIT_URL, etc., no son válidas para la conexión.
         cli.run_app(opts)
-        # cli.run_app es bloqueante y maneja el ciclo de vida del worker.
     except ValueError as e_settings: # Capturar el ValueError de AppSettings
         logging.critical(f"Error de configuración: {e_settings}")
-        # No es necesario hacer sys.exit(1), el programa terminará.
     except KeyboardInterrupt:
         logging.info("Proceso interrumpido por el usuario (Ctrl+C) durante cli.run_app. Finalizando...")
     except Exception as e:
