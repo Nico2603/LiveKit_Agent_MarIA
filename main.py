@@ -60,7 +60,6 @@ class AppSettings(BaseSettings):
     # Tavus Avatar
     tavus_api_key: Optional[str] = Field(None, env='TAVUS_API_KEY')
     tavus_replica_id: Optional[str] = Field(None, env='TAVUS_REPLICA_ID')
-    tavus_persona_id: Optional[str] = Field(None, env='TAVUS_PERSONA_ID')
 
     # Deepgram STT
     deepgram_api_key: str = Field(..., env='DEEPGRAM_API_KEY')
@@ -409,7 +408,7 @@ def parse_participant_metadata(metadata_str: Optional[str]) -> Dict[str, Optiona
     """Parsea los metadatos del participante (JSON string) en un diccionario."""
     if not metadata_str:
         logging.warning("No se proporcionaron metadatos para el participante o están vacíos.")
-        return {"userId": None, "username": None, "chatSessionId": None, "tavusReplicaId": None, "tavusPersonaId": None, "targetParticipantIdentity": None}
+        return {"userId": None, "username": None, "chatSessionId": None, "tavusReplicaId": None, "targetParticipantIdentity": None}
 
     try:
         metadata = json.loads(metadata_str)
@@ -418,7 +417,6 @@ def parse_participant_metadata(metadata_str: Optional[str]) -> Dict[str, Optiona
         username = metadata.get("username")
         chat_session_id = metadata.get("chatSessionId")
         tavus_replica_id = metadata.get("tavusReplicaId")
-        tavus_persona_id = metadata.get("tavusPersonaId")
         target_participant_identity = metadata.get("targetParticipantIdentity")
 
         # Validaciones de tipo (opcional pero recomendado para robustez)
@@ -434,9 +432,6 @@ def parse_participant_metadata(metadata_str: Optional[str]) -> Dict[str, Optiona
         if tavus_replica_id is not None and not isinstance(tavus_replica_id, str):
             logging.warning(f"tavusReplicaId esperado como string, se recibió {type(tavus_replica_id)}. Se usará None.")
             tavus_replica_id = None
-        if tavus_persona_id is not None and not isinstance(tavus_persona_id, str):
-            logging.warning(f"tavusPersonaId esperado como string, se recibió {type(tavus_persona_id)}. Se usará None.")
-            tavus_persona_id = None
         if target_participant_identity is not None and not isinstance(target_participant_identity, str):
             logging.warning(f"targetParticipantIdentity esperado como string, se recibió {type(target_participant_identity)}. Se usará None.")
             target_participant_identity = None
@@ -446,15 +441,14 @@ def parse_participant_metadata(metadata_str: Optional[str]) -> Dict[str, Optiona
             "username": username,
             "chatSessionId": chat_session_id,
             "tavusReplicaId": tavus_replica_id,
-            "tavusPersonaId": tavus_persona_id,
             "targetParticipantIdentity": target_participant_identity,
         }
     except json.JSONDecodeError:
         logging.error(f"Error al decodificar metadatos JSON del participante: {metadata_str}")
-        return {"userId": None, "username": None, "chatSessionId": None, "tavusReplicaId": None, "tavusPersonaId": None, "targetParticipantIdentity": None}
+        return {"userId": None, "username": None, "chatSessionId": None, "tavusReplicaId": None, "targetParticipantIdentity": None}
     except Exception as e:
         logging.error(f"Error inesperado al parsear metadatos del participante: {e}", exc_info=True)
-        return {"userId": None, "username": None, "chatSessionId": None, "tavusReplicaId": None, "tavusPersonaId": None, "targetParticipantIdentity": None}
+        return {"userId": None, "username": None, "chatSessionId": None, "tavusReplicaId": None, "targetParticipantIdentity": None}
 
 async def _setup_plugins(job: JobContext) -> Tuple[Optional[stt.STT], Optional[llm.LLM], Optional[vad.VAD], Optional[tts.TTS]]:
     """
@@ -514,9 +508,8 @@ async def _setup_and_start_tavus_avatar(
         logging.warning("Faltan TAVUS_API_KEY o TAVUS_REPLICA_ID en la configuración. El avatar de Tavus no se iniciará.") #
         return None
 
-    logging.info(f"Configurando Tavus AvatarSession con Replica ID: {app_settings.tavus_replica_id} y Persona ID: {app_settings.tavus_persona_id if app_settings.tavus_persona_id else 'Default'}") #
+    logging.info(f"Configurando Tavus AvatarSession con Replica ID: {app_settings.tavus_replica_id}") #
     tavus_avatar = tavus.AvatarSession(
-        persona_id=app_settings.tavus_persona_id if app_settings.tavus_persona_id else None, #
         replica_id=app_settings.tavus_replica_id, #
         api_key=app_settings.tavus_api_key, #
     )
