@@ -699,7 +699,7 @@ async def job_entrypoint(job: JobContext):
 
         # Configurar RoomInputOptions y RoomOutputOptions como especificaste
         room_input_options = RoomInputOptions(
-            text_enabled=False,    # deshabilita el canal de texto "push-to-talk"
+            text_enabled=True,    # habilita el canal de texto
             audio_enabled=True,    # habilita el micrófono para STT
             video_enabled=False    # no envías video desde tu cámara
         )
