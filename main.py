@@ -5,6 +5,7 @@ import json # Para parsear metadata
 import uuid # Para generar IDs únicos para mensajes de IA
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path # Para leer el archivo de prompt
+import time
 
 from dotenv import load_dotenv
 import aiohttp # Para llamadas HTTP asíncronas
@@ -149,8 +150,34 @@ class MariaVoiceAgent(Agent):
         self._ai_message_meta: Dict[str, Dict[str, Any]] = {}
         self._initial_greeting_text: Optional[str] = None
         self.target_participant = target_participant
+        self._agent_session: Optional[AgentSession] = None  # CORREGIDO: Cambio de nombre para evitar conflicto
 
         logging.info(f"MariaVoiceAgent (ahora Agent) inicializada para chatSessionId: {self._chat_session_id}, Usuario: {self._username}, Atendiendo a: {self.target_participant.identity}")
+
+    def set_session(self, session: AgentSession):
+        """AGREGADO: Método para asignar la AgentSession después de su creación."""
+        self._agent_session = session  # CORREGIDO: Usar _agent_session
+        logging.info("AgentSession asignada correctamente al agente")
+
+        # Conectar callbacks del agente a la sesión
+        # CORREGIDO: Wrapper síncrono para callback async
+        def on_conversation_item_added_wrapper(item):
+            asyncio.create_task(self._on_conversation_item_added(item))
+        
+        def on_tts_playback_started_wrapper(event):
+            asyncio.create_task(self.on_tts_playback_started(event))
+        
+        def on_tts_playback_finished_wrapper(event):
+            asyncio.create_task(self.on_tts_playback_finished(event))
+        
+        def on_data_received_wrapper(payload, participant, **kwargs):
+            asyncio.create_task(self._handle_frontend_data(payload, participant, **kwargs))
+
+        session.on("llm_conversation_item_added", on_conversation_item_added_wrapper)
+        session.on("tts_playback_started", on_tts_playback_started_wrapper)
+        session.on("tts_playback_finished", on_tts_playback_finished_wrapper)
+        session.on("data_received", on_data_received_wrapper)
+        logging.info("Callbacks del agente conectados a la AgentSession")
 
     async def _send_custom_data(self, data_type: str, data_payload: Dict[str, Any]):
         """
@@ -162,15 +189,15 @@ class MariaVoiceAgent(Agent):
         """
         try:
             logging.debug(f"Enviando DataChannel: type={data_type}, payload={data_payload}")
-            if hasattr(self, 'session') and self.session and self.session.room and self.session.room.local_participant:
+            if hasattr(self, '_agent_session') and self._agent_session and self._agent_session.room and self._agent_session.room.local_participant:
                  await asyncio.wait_for(
-                    self.session.room.local_participant.publish_data(json.dumps({"type": data_type, "payload": data_payload})),
+                    self._agent_session.room.local_participant.publish_data(json.dumps({"type": data_type, "payload": data_payload})),
                     timeout=DEFAULT_DATA_PUBLISH_TIMEOUT
                  )
                  if data_type == "initial_greeting_message": # Este caso parece obsoleto o para otro propósito
                      logging.debug("► Mensaje 'initial_greeting_message' enviado vía DataChannel")
             else:
-                 logging.warning("No se pudo enviar custom data: self.session no está disponible o inicializado.")
+                 logging.warning("No se pudo enviar custom data: self._agent_session no está disponible o inicializado.")
         except asyncio.TimeoutError:
             logging.error(f"Timeout al enviar DataChannel: type={data_type}, payload={data_payload}")
         except Exception as e:
@@ -178,7 +205,7 @@ class MariaVoiceAgent(Agent):
 
     async def _handle_frontend_data(self, payload: bytes, participant: 'livekit.RemoteParticipant', **kwargs):
         """Maneja los DataChannels enviados desde el frontend."""
-        if participant and hasattr(self, 'session') and self.session.participant and participant.identity == self.session.participant.identity:
+        if participant and hasattr(self, '_agent_session') and self._agent_session.participant and participant.identity == self._agent_session.participant.identity:
              return
 
         try:
@@ -190,12 +217,12 @@ class MariaVoiceAgent(Agent):
 
             if message_type == "submit_user_text":
                 user_text = message_data.get("payload", {}).get("text")
-                if user_text and hasattr(self, 'session'):
+                if user_text and hasattr(self, '_agent_session'):
                     await self._send_user_transcript_and_save(user_text)
                     logging.info(f"Generando respuesta para texto de usuario enviado: '{user_text[:50]}...'")
-                    self.session.generate_reply(user_input=user_text)
-                elif not hasattr(self, 'session'):
-                    logging.warning("_handle_frontend_data: self.session no disponible.")
+                    self._agent_session.generate_reply(user_input=user_text)
+                elif not hasattr(self, '_agent_session'):
+                    logging.warning("_handle_frontend_data: self._agent_session no disponible.")
 
         except json.JSONDecodeError:
             logging.warning(f"Error al decodificar JSON del DataChannel del frontend: {payload.decode('utf-8', errors='ignore')}")
@@ -359,12 +386,22 @@ class MariaVoiceAgent(Agent):
                 "is_closing_message": is_closing_message
             }
 
+            # CORREGIDO: Reproducir TTS tanto para el saludo inicial como para mensajes posteriores
             if self._initial_greeting_text is None:
-                logging.info(f"Estableciendo mensaje de saludo inicial (ID: {ai_message_id}): '{processed_text_for_tts}'")
+                logging.info(f"Estableciendo y reproduciendo mensaje de saludo inicial (ID: {ai_message_id}): '{processed_text_for_tts}'")
                 self._initial_greeting_text = processed_text_for_tts
+                
+                # AGREGADO: Enviar evento específico para saludo inicial que el frontend espera
+                await self._send_custom_data("initial_greeting_message", {
+                    "id": ai_message_id,
+                    "text": ai_original_response_text
+                })
+                
+                # AGREGADO: También reproducir TTS para el saludo inicial
+                await self._agent_session.speak(processed_text_for_tts, metadata=metadata_for_speak_call)
             else:
                 logging.info(f"Reproduciendo TTS para mensaje de IA (ID: {ai_message_id}): '{processed_text_for_tts[:100]}...'")
-                await self.session.speak(processed_text_for_tts, metadata=metadata_for_speak_call)
+                await self._agent_session.speak(processed_text_for_tts, metadata=metadata_for_speak_call)
 
     async def on_tts_playback_started(self, event: Any):
         """Callback cuando el TTS comienza a reproducirse."""
@@ -719,6 +756,9 @@ async def job_entrypoint(job: JobContext):
             username=username,
         )
 
+        # AGREGADO: Asignar la sesión al agente para que pueda acceder a los métodos de TTS
+        agent.set_session(agent_session)
+
         # Iniciar la lógica del agente a través de AgentSession
         logging.info(
             "Iniciando MariaVoiceAgent a través de AgentSession para el participante: %s",
@@ -731,6 +771,30 @@ async def job_entrypoint(job: JobContext):
                 room_input_options=room_input_options, # Añadido
                 room_output_options=room_output_options, # Modificado/Añadido
             )
+            
+            # AGREGADO: Generar saludo inicial automáticamente
+            logging.info("AgentSession iniciada exitosamente. Generando saludo inicial...")
+            await asyncio.sleep(2)  # Breve pausa para que el sistema se estabilice
+            
+            # Crear mensaje de saludo personalizado
+            greeting_prompt = f"Saluda a {username} y preséntate como María, su asistente de IA especializada en salud mental. Sé cálida, empática y profesional. Pregúntale cómo se siente hoy y en qué puedes ayudarle."
+            
+            try:
+                # Generar saludo usando el LLM
+                agent_session.generate_reply(user_input=greeting_prompt)
+                logging.info("Saludo inicial generado exitosamente")
+            except Exception as e:
+                logging.error(f"Error al generar saludo inicial: {e}", exc_info=True)
+                # Saludo de respaldo si falla la generación automática
+                fallback_greeting = f"¡Hola {username}! Soy María, tu asistente de IA especializada en salud mental. ¿Cómo te sientes hoy? ¿En qué puedo ayudarte?"
+                # Crear mensaje manualmente y procesarlo
+                fallback_message = llm.ChatMessage(
+                    role=llm.ChatRole.ASSISTANT,
+                    content=fallback_greeting,
+                    id=f"fallback-greeting-{int(time.time() * 1000)}"
+                )
+                await agent._on_conversation_item_added(fallback_message)
+                logging.info("Saludo de respaldo enviado")
             
             # Mantener el job vivo hasta que la sesión del agente termine
             logging.info("AgentSession.start() completado. Esperando a que el evento 'session_ended' se active...")
