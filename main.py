@@ -205,7 +205,9 @@ class MariaVoiceAgent(Agent):
 
     async def _handle_frontend_data(self, payload: bytes, participant: 'livekit.RemoteParticipant', **kwargs):
         """Maneja los DataChannels enviados desde el frontend."""
+        # CORREGIDO: Solo ignorar mensajes si vienen del propio agente, no de usuarios
         if participant and hasattr(self, '_agent_session') and self._agent_session.participant and participant.identity == self._agent_session.participant.identity:
+             logging.debug(f"Ignorando mensaje del propio agente: {participant.identity}")
              return
 
         try:
@@ -213,21 +215,24 @@ class MariaVoiceAgent(Agent):
             message_data = json.loads(data_str)
             message_type = message_data.get("type")
 
-            logging.debug(f"DataChannel recibido del frontend: Tipo='{message_type}', Participante='{participant.identity if participant else 'N/A'}', Payload='{data_str}'")
+            logging.info(f"DataChannel recibido del frontend: Tipo='{message_type}', Participante='{participant.identity if participant else 'N/A'}', Payload='{data_str}'")
 
             if message_type == "submit_user_text":
                 user_text = message_data.get("payload", {}).get("text")
                 if user_text and hasattr(self, '_agent_session'):
+                    logging.info(f"✅ Procesando mensaje de texto del usuario: '{user_text[:50]}...'")
                     await self._send_user_transcript_and_save(user_text)
-                    logging.info(f"Generando respuesta para texto de usuario enviado: '{user_text[:50]}...'")
+                    logging.info(f"🤖 Generando respuesta para texto de usuario enviado: '{user_text[:50]}...'")
                     self._agent_session.generate_reply(user_input=user_text)
                 elif not hasattr(self, '_agent_session'):
-                    logging.warning("_handle_frontend_data: self._agent_session no disponible.")
+                    logging.warning("❌ _handle_frontend_data: self._agent_session no disponible.")
+                else:
+                    logging.warning(f"❌ Mensaje de texto vacío recibido del participante: {participant.identity if participant else 'N/A'}")
 
         except json.JSONDecodeError:
-            logging.warning(f"Error al decodificar JSON del DataChannel del frontend: {payload.decode('utf-8', errors='ignore')}")
+            logging.warning(f"❌ Error al decodificar JSON del DataChannel del frontend: {payload.decode('utf-8', errors='ignore')}")
         except Exception as e:
-            logging.error(f"Error al procesar DataChannel del frontend: {e}", exc_info=True)
+            logging.error(f"❌ Error al procesar DataChannel del frontend: {e}", exc_info=True)
 
     async def _save_message(self, content: str, sender: str, message_id: Optional[str] = None, is_sensitive: bool = False):
         """
@@ -626,7 +631,7 @@ async def job_entrypoint(job: JobContext):
     """
     logging.info(f"Iniciando job_entrypoint para la sala: {job.room.name}")
     logging.info(f"Metadata del Job (job.job.metadata): {job.job.metadata}")
-
+    
     # Conectar al JobContext (gestionado por LiveKit)
     try:
         await job.connect()
@@ -635,19 +640,25 @@ async def job_entrypoint(job: JobContext):
         logging.critical(f"Error al conectar con job.connect(): {e_connect}", exc_info=True)
         return
 
-    # Parsear metadata del job para obtener chat_session_id, username, etc.
-    parsed_metadata = parse_participant_metadata(job.job.metadata)
+    # CORREGIDO: Acceder a la metadata desde el participante local, no del job
+    local_participant = job.room.local_participant
+    participant_metadata = getattr(local_participant, 'metadata', None)
+    
+    logging.info(f"Metadata del participante local: {participant_metadata}")
+    
+    # Parsear metadata del participante para obtener chat_session_id, username, etc.
+    parsed_metadata = parse_participant_metadata(participant_metadata)
     chat_session_id = parsed_metadata.get("chatSessionId")
     username = parsed_metadata.get("username", "Usuario") # Default a "Usuario" si no se provee
 
     # MODIFICACIÓN PARA MODO DEV SIN METADATA FLAG
-    # Si no se encontró chatSessionId (lo que ocurre si job.job.metadata es None o no lo contiene),
+    # Si no se encontró chatSessionId (lo que ocurre si participant_metadata es None o no lo contiene),
     # asignamos un valor por defecto. Esto es útil para desarrollo local con `python main.py dev`
     # sin necesidad de pasar el flag --metadata.
     if not chat_session_id:
         default_dev_session_id = "dev_default_chat_session_id_123"
         logging.warning(
-            f"chatSessionId no se encontró en la metadata del job (job.job.metadata era '{job.job.metadata}'). "
+            f"chatSessionId no se encontró en la metadata del participante (participant.metadata era '{participant_metadata}'). "
             f"Asignando valor por defecto para desarrollo: '{default_dev_session_id}'."
         )
         chat_session_id = default_dev_session_id
@@ -774,32 +785,51 @@ async def job_entrypoint(job: JobContext):
             
             # AGREGADO: Generar saludo inicial automáticamente
             logging.info("AgentSession iniciada exitosamente. Generando saludo inicial...")
-            await asyncio.sleep(2)  # Breve pausa para que el sistema se estabilice
             
-            # Crear mensaje de saludo personalizado
-            greeting_prompt = f"Saluda a {username} y preséntate como María, su asistente de IA especializada en salud mental. Sé cálida, empática y profesional. Pregúntale cómo se siente hoy y en qué puedes ayudarle."
+            # Esperar un poco más para que todo el sistema se estabilice
+            await asyncio.sleep(3)
             
-            try:
-                # Generar saludo usando el LLM
-                agent_session.generate_reply(user_input=greeting_prompt)
-                logging.info("Saludo inicial generado exitosamente")
-            except Exception as e:
-                logging.error(f"Error al generar saludo inicial: {e}", exc_info=True)
-                # Saludo de respaldo si falla la generación automática
-                fallback_greeting = f"¡Hola {username}! Soy María, tu asistente de IA especializada en salud mental. ¿Cómo te sientes hoy? ¿En qué puedo ayudarte?"
-                # Crear mensaje manualmente y procesarlo
-                fallback_message = llm.ChatMessage(
-                    role=llm.ChatRole.ASSISTANT,
-                    content=fallback_greeting,
-                    id=f"fallback-greeting-{int(time.time() * 1000)}"
-                )
-                await agent._on_conversation_item_added(fallback_message)
-                logging.info("Saludo de respaldo enviado")
-            
-            # Mantener el job vivo hasta que la sesión del agente termine
-            logging.info("AgentSession.start() completado. Esperando a que el evento 'session_ended' se active...")
-            await session_ended_event.wait()
-            logging.info("Evento 'session_ended' activado. El job_entrypoint continuará para finalizar.")
+            # Verificar que la conexión esté estable antes de generar el saludo
+            if not job.room or not job.room.local_participant:
+                logging.error("❌ No se puede generar saludo inicial: room o local_participant no disponible")
+            else:
+                logging.info(f"✅ Generando saludo inicial para {username}")
+                
+                # Crear mensaje de saludo personalizado más directo
+                greeting_prompt = f"Genera un saludo inicial cálido y profesional para {username}. Preséntate como María, asistente de IA especializada en salud mental. Sé empática, profesional pero cercana. Pregúntale cómo se siente hoy y ofrece tu ayuda. Máximo 2-3 oraciones."
+                
+                try:
+                    # Generar saludo usando el LLM
+                    logging.info(f"🎯 Enviando prompt de saludo al LLM: {greeting_prompt[:100]}...")
+                    agent_session.generate_reply(user_input=greeting_prompt)
+                    logging.info("✅ Saludo inicial solicitado al LLM exitosamente")
+                    
+                    # Dar tiempo para que el LLM procese y genere la respuesta
+                    await asyncio.sleep(2)
+                    
+                except Exception as e:
+                    logging.error(f"❌ Error al generar saludo inicial: {e}", exc_info=True)
+                    
+                    # Saludo de respaldo si falla la generación automática
+                    fallback_greeting = f"¡Hola {username}! Soy María, tu asistente de IA especializada en salud mental. Estoy aquí para apoyarte y escucharte. ¿Cómo te sientes hoy? ¿En qué puedo ayudarte?"
+                    
+                    logging.info(f"🔄 Creando saludo de respaldo: {fallback_greeting}")
+                    
+                    # Crear mensaje manualmente y procesarlo
+                    fallback_message = llm.ChatMessage(
+                        role=llm.ChatRole.ASSISTANT,
+                        content=fallback_greeting,
+                        id=f"fallback-greeting-{int(time.time() * 1000)}"
+                    )
+                    
+                    # Procesar el mensaje de respaldo inmediatamente
+                    await agent._on_conversation_item_added(fallback_message)
+                    logging.info("✅ Saludo de respaldo procesado y enviado")
+                
+                # Mantener el job vivo hasta que la sesión del agente termine
+                logging.info("🔄 AgentSession.start() completado. Esperando a que el evento 'session_ended' se active...")
+                await session_ended_event.wait()
+                logging.info("🏁 Evento 'session_ended' activado. El job_entrypoint continuará para finalizar.")
 
         except Exception as e:
             logging.critical(
