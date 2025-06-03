@@ -751,11 +751,34 @@ async def job_entrypoint(job: JobContext):
         logging.critical(f"Error al conectar con job.connect(): {e_connect}", exc_info=True)
         return
 
-    # CORREGIDO: Acceder a la metadata desde el participante local, no del job
-    local_participant = job.room.local_participant
-    participant_metadata = getattr(local_participant, 'metadata', None)
+    # Obtener la identidad local primero
+    local_id = job.room.local_participant.identity
+    logging.info(f"Agente local identity: {local_id}")
+
+    # CORREGIDO: Acceder a la metadata desde el participante remoto (usuario), no del local (agente)
+    # Auto-descubrimiento del participante remoto y obtención de metadatos
+    participants = list(job.room.remote_participants.values())
+    candidates = [p for p in participants if p.identity != local_id]
+    target_remote_participant: Optional[RemoteParticipant] = None
+    participant_metadata = None
     
-    logging.info(f"Metadata del participante local: {participant_metadata}")
+    if candidates:
+        # Si ya hay participantes remotos, usar el primero
+        target_remote_participant = candidates[0]
+        participant_metadata = getattr(target_remote_participant, 'metadata', None)
+        logging.info(f"Auto-descubrimiento: elegido participante {target_remote_participant.identity}")
+        logging.info(f"Metadata del participante remoto {target_remote_participant.identity}: {participant_metadata}")
+    else:
+        # Si no hay participantes remotos aún, esperar al primero
+        logging.info(f"No se encontraron participantes remotos existentes. Esperando al primero en conectarse (distinto de {local_id})...")
+        target_remote_participant = await find_first_remote(job.room, local_id)
+        if not target_remote_participant:
+            logging.error("No llegó ningún usuario remoto; abortando.")
+            await job.disconnect() # Desconectar si no hay participante
+            return
+        participant_metadata = getattr(target_remote_participant, 'metadata', None)
+        logging.info(f"Auto-descubrimiento por espera: elegido participante {target_remote_participant.identity}")
+        logging.info(f"Metadata del participante remoto {target_remote_participant.identity}: {participant_metadata}")
     
     # Parsear metadata del participante para obtener chat_session_id, username, etc.
     parsed_metadata = parse_participant_metadata(participant_metadata)
@@ -793,27 +816,6 @@ async def job_entrypoint(job: JobContext):
     if not all([stt_plugin, llm_plugin, vad_plugin, tts_plugin]):
         logging.critical("Faltan uno o más plugins esenciales. Abortando.")
         return
-
-    # Obtener la identidad local
-    local_id = job.room.local_participant.identity
-    logging.info(f"Agente local identity: {local_id}")
-
-    # Auto-descubrimiento del participante remoto
-    participants = list(job.room.remote_participants.values())
-    candidates = [p for p in participants if p.identity != local_id]
-    target_remote_participant: Optional[RemoteParticipant] = None
-
-    if candidates:
-        target_remote_participant = candidates[0]
-        logging.info(f"Auto-descubrimiento: elegido participante {target_remote_participant.identity}")
-    else:
-        logging.info(f"No se encontraron participantes remotos existentes. Esperando al primero en conectarse (distinto de {local_id})...")
-        target_remote_participant = await find_first_remote(job.room, local_id)
-        if not target_remote_participant:
-            logging.error("No llegó ningún usuario remoto; abortando.")
-            await job.disconnect() # Desconectar si no hay participante
-            return
-        logging.info(f"Auto-descubrimiento por espera: elegido participante {target_remote_participant.identity}")
 
     # Crear sesión HTTP para que MariaVoiceAgent la use para guardar mensajes
     async with aiohttp.ClientSession() as http_session:
