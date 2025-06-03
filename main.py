@@ -80,7 +80,24 @@ class AppSettings(BaseSettings):
 
 # Instancia global de configuración
 settings = AppSettings()
-# Fin del contenido de config.py
+
+class MessageThrottler:
+    """Clase para reducir el spam de logs de eventos repetitivos."""
+    def __init__(self):
+        self.last_log_times = {}
+        self.throttle_seconds = 5  # Solo log cada 5 segundos para el mismo evento
+    
+    def should_log(self, event_key):
+        now = time.time()
+        last_time = self.last_log_times.get(event_key, 0)
+        
+        if now - last_time >= self.throttle_seconds:
+            self.last_log_times[event_key] = now
+            return True
+        return False
+
+# Instancia global del throttler
+message_throttler = MessageThrottler()
 
 # Cargar variables de entorno (si .env file es usado por AppSettings, esto podría ser redundante o necesitar ajuste)
 # load_dotenv() # AppSettings ya carga desde .env
@@ -135,8 +152,7 @@ class MariaVoiceAgent(Agent):
         """
 
         system_prompt = MARIA_SYSTEM_PROMPT_TEMPLATE.format(
-            username=username,
-            user_greeting="",
+            username=username if username and username != "Usuario" else "Usuario",
             latest_summary="No hay información previa relevante."
         ).strip()
 
@@ -286,7 +302,7 @@ class MariaVoiceAgent(Agent):
             return {"type": data_type, "payload": data_payload}
 
     async def _handle_frontend_data(self, payload: bytes, participant: 'livekit.RemoteParticipant'):
-        """Maneja los DataChannels enviados desde el frontend."""
+        """Maneja los DataChannels enviados desde el frontend con manejo mejorado de eventos Tavus."""
         # CORREGIDO: Usar la identidad del agente local almacenada para ignorar mensajes propios
         if participant and self._local_agent_identity and participant.identity == self._local_agent_identity:
              logging.debug(f"Ignorando mensaje del propio agente: {participant.identity}")
@@ -296,10 +312,70 @@ class MariaVoiceAgent(Agent):
             data_str = payload.decode('utf-8')
             message_data = json.loads(data_str)
             
-            logging.info(f"DataChannel recibido del frontend: Participante='{participant.identity if participant else 'N/A'}', Payload='{data_str}'")
+            logging.debug(f"DataChannel recibido del frontend: Participante='{participant.identity if participant else 'N/A'}', Payload='{data_str}'")
+
+            # Extraer campos del mensaje
+            message_type = message_data.get("type")
+            tavus_message_type = message_data.get("message_type")
+            tavus_event_type = message_data.get("event_type")
+
+            # Manejar eventos del sistema Tavus sin warnings
+            if tavus_message_type == 'system':
+                if tavus_event_type == 'system.replica_joined':
+                    logging.info("✅ Sistema: Avatar se unió a la conversación")
+                    return
+                elif tavus_event_type == 'system.replica_present':
+                    # Heartbeat/confirmación de presencia - solo log cada 10 intentos para reducir spam
+                    attempt = message_data.get('properties', {}).get('attempt', 1)
+                    if attempt == 1 or attempt % 10 == 0:
+                        if message_throttler.should_log('system.replica_present'):
+                            logging.info(f"✅ Sistema: Avatar presente (intento {attempt})")
+                    return
+                elif tavus_event_type == 'system.replica_ready':
+                    logging.info("✅ Sistema: Avatar listo para interacción")
+                    return
+                elif tavus_event_type == 'system.shutdown':
+                    logging.info("✅ Sistema: Conversación terminada")
+                    return
+                elif tavus_event_type == 'system.heartbeat':
+                    # Heartbeat silencioso
+                    logging.debug("🔄 Heartbeat del sistema recibido")
+                    return
+                else:
+                    # Otros eventos de sistema no reconocidos - solo log informativo
+                    logging.info(f"ℹ️ Evento de sistema no manejado: {tavus_event_type}")
+                    return
+            
+            # Manejar eventos de conversación
+            if tavus_message_type == 'conversation':
+                if tavus_event_type == 'conversation.replica.started_speaking':
+                    logging.info("🔊 Avatar comenzó a hablar") 
+                    return
+                elif tavus_event_type == 'conversation.replica.stopped_speaking':
+                    logging.info("🔇 Avatar terminó de hablar")
+                    return
+                elif tavus_event_type == 'conversation.replica.response':
+                    logging.info("💬 Respuesta del avatar recibida")
+                    return
+                elif tavus_event_type == 'conversation.respond':
+                    # Manejo de mensajes del usuario en formato Tavus
+                    user_text = message_data.get("properties", {}).get("text")
+                    if user_text and hasattr(self, '_agent_session'):
+                        logging.info(f"✅ Procesando mensaje de texto del usuario (formato Tavus): '{user_text[:50]}...'")
+                        await self._send_user_transcript_and_save(user_text)
+                        logging.info(f"🤖 Generando respuesta para texto de usuario enviado: '{user_text[:50]}...'")
+                        self._agent_session.generate_reply(user_input=user_text)
+                    elif not hasattr(self, '_agent_session'):
+                        logging.warning("❌ _handle_frontend_data: self._agent_session no disponible.")
+                    else:
+                        logging.warning(f"❌ Mensaje de texto vacío recibido del participante: {participant.identity if participant else 'N/A'}")
+                    return
+                else:
+                    # Solo advertir para eventos de conversación no reconocidos
+                    logging.warning(f"⚠️ Evento de conversación no reconocido: '{tavus_event_type}'")
+                    return
 
             # Manejar formato original
-            message_type = message_data.get("type")
             if message_type == "submit_user_text":
                 user_text = message_data.get("payload", {}).get("text")
                 if user_text and hasattr(self, '_agent_session'):
@@ -313,25 +389,14 @@ class MariaVoiceAgent(Agent):
                     logging.warning(f"❌ Mensaje de texto vacío recibido del participante: {participant.identity if participant else 'N/A'}")
                 return
 
-            # Manejar formato de Tavus
-            tavus_message_type = message_data.get("message_type")
-            tavus_event_type = message_data.get("event_type")
-            
-            if tavus_message_type == "conversation" and tavus_event_type == "conversation.respond":
-                user_text = message_data.get("properties", {}).get("text")
-                if user_text and hasattr(self, '_agent_session'):
-                    logging.info(f"✅ Procesando mensaje de texto del usuario (formato Tavus): '{user_text[:50]}...'")
-                    await self._send_user_transcript_and_save(user_text)
-                    logging.info(f"🤖 Generando respuesta para texto de usuario enviado: '{user_text[:50]}...'")
-                    self._agent_session.generate_reply(user_input=user_text)
-                elif not hasattr(self, '_agent_session'):
-                    logging.warning("❌ _handle_frontend_data: self._agent_session no disponible.")
-                else:
-                    logging.warning(f"❌ Mensaje de texto vacío recibido del participante: {participant.identity if participant else 'N/A'}")
+            # Manejar eventos directos (formato no-Tavus)
+            if message_type:
+                logging.info(f"📨 Evento directo recibido: tipo='{message_type}'")
+                # Procesar según el tipo de evento
                 return
 
-            # Si llegamos aquí, el mensaje no coincide con ningún formato conocido
-            logging.warning(f"❌ Formato de mensaje no reconocido. Tipo: '{message_type}', Tavus tipo: '{tavus_message_type}', Tavus evento: '{tavus_event_type}'")
+            # Solo log informativo para mensajes desconocidos (sin warning)
+            logging.info(f"ℹ️ Mensaje recibido sin formato estándar: {message_data}")
 
         except json.JSONDecodeError:
             logging.warning(f"❌ Error al decodificar JSON del DataChannel del frontend: {payload.decode('utf-8', errors='ignore')}")
@@ -785,6 +850,20 @@ async def job_entrypoint(job: JobContext):
     chat_session_id = parsed_metadata.get("chatSessionId")
     username = parsed_metadata.get("username", "Usuario") # Default a "Usuario" si no se provee
 
+    # CORREGIR: Si no hay username en metadata, extraer del participant.identity
+    if not username or username == "Usuario":
+        # Extraer nombre del participant.identity (formato: "Nombre_sessionId")
+        participant_identity = target_remote_participant.identity
+        if participant_identity and "_" in participant_identity:
+            extracted_name = participant_identity.split("_")[0]
+            # Reemplazar guiones bajos con espacios para nombres compuestos
+            extracted_name = extracted_name.replace("_", " ")
+            username = extracted_name
+            logging.info(f"Nombre de usuario extraído de participant.identity: '{username}'")
+        elif participant_identity:
+            username = participant_identity
+            logging.info(f"Usando participant.identity completo como nombre: '{username}'")
+
     # MODIFICACIÓN PARA MODO DEV SIN METADATA FLAG
     # Si no se encontró chatSessionId (lo que ocurre si participant_metadata es None o no lo contiene),
     # asignamos un valor por defecto. Esto es útil para desarrollo local con `python main.py dev`
@@ -796,11 +875,7 @@ async def job_entrypoint(job: JobContext):
             f"Asignando valor por defecto para desarrollo: '{default_dev_session_id}'."
         )
         chat_session_id = default_dev_session_id
-        # Opcionalmente, también un nombre de usuario por defecto si no vino y se quedó el genérico.
-        if username == "Usuario" and not parsed_metadata.get("username"):
-             default_dev_username = "DevUser"
-             logging.info(f"Asignando nombre de usuario por defecto para desarrollo: '{default_dev_username}'.")
-             username = default_dev_username
+        # Ya no necesitamos asignar username por defecto aquí porque ya lo extrajimos arriba
 
     if not chat_session_id:
         logging.critical("chatSessionId no encontrado en la metadata y no se pudo establecer un valor por defecto. Abortando.")
@@ -973,18 +1048,18 @@ async def job_entrypoint(job: JobContext):
                 
                 logging.info("✅ Saludo inicial procesado completamente")
                 
-                # Opcionalmente, también generar un saludo personalizado usando el LLM
-                # pero esto será adicional y no bloqueará la interfaz
-                try:
-                    greeting_instructions = f"Genera un saludo personalizado muy breve (máximo 2 oraciones) para {username} en una sesión de terapia virtual. Sé cálida pero profesional."
-                    
-                    # Esto generará otro mensaje, pero no será el saludo inicial
-                    logging.info(f"🎯 Generando saludo personalizado adicional...")
-                    agent_session.generate_reply(user_input=greeting_instructions)
-                    
-                except Exception as e:
-                    logging.warning(f"⚠️ Error al generar saludo personalizado adicional: {e}")
-                    # No es crítico si falla, ya tenemos el saludo inmediato
+                # COMENTADO: Saludo personalizado adicional deshabilitado para evitar duplicados
+                # El saludo inmediato ya incluye el nombre del usuario y es suficiente
+                # try:
+                #     greeting_instructions = f"Genera un saludo personalizado muy breve (máximo 2 oraciones) para {username} en una sesión de terapia virtual. Sé cálida pero profesional."
+                #     
+                #     # Esto generará otro mensaje, pero no será el saludo inicial
+                #     logging.info(f"🎯 Generando saludo personalizado adicional...")
+                #     agent_session.generate_reply(user_input=greeting_instructions)
+                #     
+                # except Exception as e:
+                #     logging.warning(f"⚠️ Error al generar saludo personalizado adicional: {e}")
+                #     # No es crítico si falla, ya tenemos el saludo inmediato
                 
                 # Mantener el job vivo hasta que la sesión del agente termine
                 logging.info("🔄 AgentSession.start() completado. Esperando a que el evento 'session_ended' se active...")
