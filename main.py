@@ -67,7 +67,7 @@ class AppSettings(BaseSettings):
     livekit_agent_port: int = Field(8000, env='LIVEKIT_AGENT_PORT')
 
     # Backend API
-    api_base_url: str = Field(..., env='API_BASE_URL')
+    api_base_url: str = Field('http://localhost:3000', env='API_BASE_URL')
 
     # OpenAI
     openai_api_key: str = Field(..., env='OPENAI_API_KEY')
@@ -76,7 +76,7 @@ class AppSettings(BaseSettings):
     # Cartesia TTS
     cartesia_api_key: str = Field(..., env='CARTESIA_API_KEY')
     cartesia_model: str = Field('sonic-spanish', env='CARTESIA_MODEL')
-    cartesia_voice_id: str = Field(..., env='CARTESIA_VOICE_ID')
+    cartesia_voice_id: str = Field('default-voice-id', env='CARTESIA_VOICE_ID')
     cartesia_language: str = Field('es', env='CARTESIA_LANGUAGE')
     cartesia_speed: float = Field(1.0, env='CARTESIA_SPEED')
     cartesia_emotion: Optional[str] = Field(None, env='CARTESIA_EMOTION')
