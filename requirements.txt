@@ -5,4 +5,5 @@ livekit-plugins-deepgram
 livekit-plugins-openai
 livekit-plugins-silero
 livekit-plugins-cartesia
+livekit-plugins-tavus
 openai 

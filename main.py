@@ -39,7 +39,17 @@ from livekit.agents import (
 )
 from livekit.agents.llm import ChatMessage # Importar ChatMessage
 from livekit.rtc import RemoteParticipant, Room
-from livekit.plugins import deepgram, openai, silero, cartesia, tavus
+# Importar plugins de LiveKit con manejo de errores para Tavus
+from livekit.plugins import deepgram, openai, silero, cartesia
+
+# Importar tavus con manejo de errores
+try:
+    from livekit.plugins import tavus
+    TAVUS_AVAILABLE = True
+except ImportError:
+    logging.warning("Plugin tavus no disponible. El avatar de Tavus será deshabilitado.")
+    tavus = None
+    TAVUS_AVAILABLE = False
 
 # Contenido de config.py movido aquí
 from typing import Optional
@@ -812,8 +822,12 @@ async def _setup_and_start_tavus_avatar(
     agent_session_instance: AgentSession,
     room: 'livekit.Room',
     app_settings: 'AppSettings'
-) -> Optional[tavus.AvatarSession]:
+) -> Optional['tavus.AvatarSession']:
     """Configura e inicia el avatar de Tavus si las credenciales están presentes en app_settings."""
+    if not TAVUS_AVAILABLE:
+        logging.warning("Plugin de Tavus no está disponible. El avatar de Tavus será deshabilitado.")
+        return None
+        
     if not (app_settings.tavus_api_key and app_settings.tavus_replica_id):
         logging.warning("Faltan TAVUS_API_KEY o TAVUS_REPLICA_ID en la configuración. El avatar de Tavus no se iniciará.")
         return None
@@ -1016,9 +1030,9 @@ async def job_entrypoint(job: JobContext):
 
         agent_session.on("session_ended", on_session_end_handler)
 
-        tavus_avatar_session: Optional[tavus.AvatarSession] = None
-        # La condición para configurar Tavus ahora usa directamente settings
-        tavus_configured = bool(settings.tavus_api_key and settings.tavus_replica_id) #
+        tavus_avatar_session = None
+        # La condición para configurar Tavus ahora usa directamente settings y verifica disponibilidad
+        tavus_configured = bool(TAVUS_AVAILABLE and settings.tavus_api_key and settings.tavus_replica_id)
 
         if tavus_configured:
             logging.info("Intentando configurar y arrancar el avatar de Tavus...")
