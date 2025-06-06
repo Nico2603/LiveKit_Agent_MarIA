@@ -46,8 +46,8 @@ from livekit.plugins import deepgram, openai, silero, cartesia
 try:
     from livekit.plugins import tavus
     TAVUS_AVAILABLE = True
-except ImportError:
-    logging.warning("Plugin tavus no disponible. El avatar de Tavus será deshabilitado.")
+except ImportError as e:
+    logging.warning(f"Plugin tavus no disponible: {e}. El avatar de Tavus será deshabilitado.")
     tavus = None
     TAVUS_AVAILABLE = False
 
@@ -67,7 +67,7 @@ class AppSettings(BaseSettings):
     livekit_agent_port: int = Field(8000, env='LIVEKIT_AGENT_PORT')
 
     # Backend API
-    api_base_url: str = Field('http://localhost:3000', env='API_BASE_URL')
+    api_base_url: str = Field('https://mar-ia-7s6y.onrender.com', env='API_BASE_URL')
 
     # OpenAI
     openai_api_key: str = Field(..., env='OPENAI_API_KEY')
@@ -76,7 +76,7 @@ class AppSettings(BaseSettings):
     # Cartesia TTS
     cartesia_api_key: str = Field(..., env='CARTESIA_API_KEY')
     cartesia_model: str = Field('sonic-2', env='CARTESIA_MODEL')
-    cartesia_voice_id: str = Field(..., env='CARTESIA_VOICE_ID')
+    cartesia_voice_id: str = Field('5c5ad5e7-1020-476b-8b91-fdcbe9cc313c', env='CARTESIA_VOICE_ID')
     cartesia_language: str = Field('es', env='CARTESIA_LANGUAGE')
     cartesia_speed: float = Field(1.0, env='CARTESIA_SPEED')
     cartesia_emotion: Optional[str] = Field(None, env='CARTESIA_EMOTION')
@@ -105,6 +105,11 @@ class AppSettings(BaseSettings):
 try:
     settings = AppSettings()
     logging.info("✅ Configuración cargada exitosamente")
+    logging.info(f"🔗 LiveKit URL: {settings.livekit_url}")
+    logging.info(f"🌐 API Base URL: {settings.api_base_url}")
+    logging.info(f"🤖 OpenAI Model: {settings.openai_model}")
+    logging.info(f"🎵 Cartesia Voice ID: {settings.cartesia_voice_id}")
+    logging.info(f"🧊 Tavus disponible: {TAVUS_AVAILABLE}")
 except Exception as e:
     logging.error(f"❌ Error cargando configuración: {e}")
     # Crear configuración por defecto para desarrollo
@@ -115,7 +120,7 @@ except Exception as e:
             self.livekit_api_key = os.getenv('LIVEKIT_API_KEY', '')
             self.livekit_api_secret = os.getenv('LIVEKIT_API_SECRET', '')
             self.livekit_agent_port = int(os.getenv('LIVEKIT_AGENT_PORT', '7880'))
-            self.api_base_url = os.getenv('API_BASE_URL', 'http://localhost:3000')
+            self.api_base_url = os.getenv('API_BASE_URL', 'https://mar-ia-7s6y.onrender.com')
             self.openai_api_key = os.getenv('OPENAI_API_KEY', '')
             self.openai_model = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
             self.cartesia_api_key = os.getenv('CARTESIA_API_KEY', '')
