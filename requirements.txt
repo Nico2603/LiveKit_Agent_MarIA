@@ -6,4 +6,5 @@ livekit-plugins-openai
 livekit-plugins-silero
 livekit-plugins-cartesia
 livekit-plugins-tavus
-openai 
+openai
+pydantic-settings 
