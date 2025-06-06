@@ -39,7 +39,7 @@ from livekit.agents import (
 )
 from livekit.agents.llm import ChatMessage # Importar ChatMessage
 from livekit.rtc import RemoteParticipant, Room
-# Importar plugins de LiveKit con manejo de errores para Tavus
+# Importar plugins de LiveKit
 from livekit.plugins import deepgram, openai, silero, cartesia
 
 # Importar tavus con manejo de errores
@@ -75,8 +75,8 @@ class AppSettings(BaseSettings):
 
     # Cartesia TTS
     cartesia_api_key: str = Field(..., env='CARTESIA_API_KEY')
-    cartesia_model: str = Field('sonic-spanish', env='CARTESIA_MODEL')
-    cartesia_voice_id: str = Field('default-voice-id', env='CARTESIA_VOICE_ID')
+    cartesia_model: str = Field('sonic-2', env='CARTESIA_MODEL')
+    cartesia_voice_id: str = Field(..., env='CARTESIA_VOICE_ID')
     cartesia_language: str = Field('es', env='CARTESIA_LANGUAGE')
     cartesia_speed: float = Field(1.0, env='CARTESIA_SPEED')
     cartesia_emotion: Optional[str] = Field(None, env='CARTESIA_EMOTION')
@@ -101,8 +101,36 @@ class AppSettings(BaseSettings):
         case_sensitive = False
         extra = 'ignore'
 
-# Instancia global de configuración
-settings = AppSettings()
+# Instancia global de configuración con manejo de errores
+try:
+    settings = AppSettings()
+    logging.info("✅ Configuración cargada exitosamente")
+except Exception as e:
+    logging.error(f"❌ Error cargando configuración: {e}")
+    # Crear configuración por defecto para desarrollo
+    import os
+    class DefaultSettings:
+        def __init__(self):
+            self.livekit_url = os.getenv('LIVEKIT_URL', 'wss://localhost:7880')
+            self.livekit_api_key = os.getenv('LIVEKIT_API_KEY', '')
+            self.livekit_api_secret = os.getenv('LIVEKIT_API_SECRET', '')
+            self.livekit_agent_port = int(os.getenv('LIVEKIT_AGENT_PORT', '7880'))
+            self.api_base_url = os.getenv('API_BASE_URL', 'http://localhost:3000')
+            self.openai_api_key = os.getenv('OPENAI_API_KEY', '')
+            self.openai_model = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+            self.cartesia_api_key = os.getenv('CARTESIA_API_KEY', '')
+            self.cartesia_model = os.getenv('CARTESIA_MODEL', 'sonic-2')
+            self.cartesia_voice_id = os.getenv('CARTESIA_VOICE_ID', '5c5ad5e7-1020-476b-8b91-fdcbe9cc313c')
+            self.cartesia_language = os.getenv('CARTESIA_LANGUAGE', 'es')
+            self.cartesia_speed = float(os.getenv('CARTESIA_SPEED', '1.0'))
+            self.cartesia_emotion = os.getenv('CARTESIA_EMOTION')
+            self.tavus_api_key = os.getenv('TAVUS_API_KEY')
+            self.tavus_replica_id = os.getenv('TAVUS_REPLICA_ID')
+            self.deepgram_api_key = os.getenv('DEEPGRAM_API_KEY', '')
+            self.deepgram_model = os.getenv('DEEPGRAM_MODEL', 'nova-2')
+    
+    settings = DefaultSettings()
+    logging.warning("⚠️ Usando configuración por defecto debido a errores de validación")
 
 class MessageThrottler:
     """Clase para reducir el spam de logs de eventos repetitivos."""
