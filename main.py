@@ -6,6 +6,7 @@ import uuid # Para generar IDs únicos para mensajes de IA
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path # Para leer el archivo de prompt
 import time
+import re
 
 # CRÍTICO: Cargar variables de entorno ANTES que cualquier otra importación
 from dotenv import load_dotenv
@@ -683,6 +684,9 @@ class MariaVoiceAgent(Agent):
 
             processed_text_for_tts, is_closing_message = self._process_closing_message(ai_original_response_text)
             processed_text_for_tts, video_payload = self._process_video_suggestion(processed_text_for_tts)
+            
+            # Limpiar texto para TTS (convertir números y limpiar puntuaciones)
+            processed_text_for_tts = clean_text_for_tts(processed_text_for_tts)
 
             await self._save_message(ai_original_response_text, "assistant", message_id=ai_message_id)
 
@@ -1140,6 +1144,9 @@ async def job_entrypoint(job: JobContext):
                 # Mensaje de saludo optimizado para ansiedad
                 immediate_greeting = f"¡Hola{' ' + username if username and username != 'Usuario' else ''}! Soy María, tu asistente especializada en manejo de ansiedad. Estoy aquí para escucharte y acompañarte. Cuéntame, ¿qué te ha traído hoy hasta aquí?"
                 
+                # Limpiar el saludo para TTS
+                immediate_greeting_clean = clean_text_for_tts(immediate_greeting)
+                
                 # Crear mensaje del saludo inmediato
                 immediate_greeting_id = f"immediate-greeting-{int(time.time() * 1000)}"
                 
@@ -1160,13 +1167,13 @@ async def job_entrypoint(job: JobContext):
                 })
                 
                 # Marcar como saludo inicial procesado
-                agent._initial_greeting_text = immediate_greeting
+                agent._initial_greeting_text = immediate_greeting_clean
                 
                 # Generar TTS real para que María hable
                 logging.info(f"🔊 Iniciando TTS para que María pronuncie el saludo")
                 try:
-                    # Usar el método say del agent_session directamente
-                    await agent_session.say(immediate_greeting, allow_interruptions=True)
+                    # Usar el método say del agent_session directamente con texto limpio
+                    await agent_session.say(immediate_greeting_clean, allow_interruptions=True)
                     logging.info("✅ María está hablando - TTS iniciado exitosamente")
                     
                 except Exception as e:
@@ -1175,7 +1182,7 @@ async def job_entrypoint(job: JobContext):
                     try:
                         # Método alternativo: usar el TTS directamente
                         if hasattr(agent_session, 'tts') and agent_session.tts:
-                            tts_audio = agent_session.tts.synthesize(immediate_greeting)
+                            tts_audio = agent_session.tts.synthesize(immediate_greeting_clean)
                             # El audio se manejará automáticamente por el sistema
                             logging.info("✅ TTS alternativo iniciado correctamente")
                         else:
@@ -1242,6 +1249,91 @@ async def job_entrypoint(job: JobContext):
             logging.info("Desconectando el Job de LiveKit...")
             job.shutdown(reason="Dev mode complete") # Cambio a shutdown
             logging.info("Job desconectado.")
+
+def convert_numbers_to_text(text: str) -> str:
+    """
+    Convierte números del 0 al 100 a su representación en texto en español
+    para mejorar la pronunciación del TTS.
+    
+    Args:
+        text: El texto que puede contener números
+        
+    Returns:
+        El texto con números convertidos a palabras
+    """
+    # Diccionario de conversión de números a texto
+    number_dict = {
+        '0': 'cero', '1': 'uno', '2': 'dos', '3': 'tres', '4': 'cuatro',
+        '5': 'cinco', '6': 'seis', '7': 'siete', '8': 'ocho', '9': 'nueve',
+        '10': 'diez', '11': 'once', '12': 'doce', '13': 'trece', '14': 'catorce',
+        '15': 'quince', '16': 'dieciséis', '17': 'diecisiete', '18': 'dieciocho',
+        '19': 'diecinueve', '20': 'veinte', '21': 'veintiuno', '22': 'veintidós',
+        '23': 'veintitrés', '24': 'veinticuatro', '25': 'veinticinco', '26': 'veintiséis',
+        '27': 'veintisiete', '28': 'veintiocho', '29': 'veintinueve', '30': 'treinta',
+        '40': 'cuarenta', '50': 'cincuenta', '60': 'sesenta', '70': 'setenta',
+        '80': 'ochenta', '90': 'noventa', '100': 'cien'
+    }
+    
+    def replace_number(match):
+        num_str = match.group()
+        num = int(num_str)
+        
+        # Números directos en el diccionario
+        if num_str in number_dict:
+            return number_dict[num_str]
+        
+        # Números del 31-39, 41-49, etc.
+        if 31 <= num <= 99:
+            tens = (num // 10) * 10
+            ones = num % 10
+            if ones == 0:
+                return number_dict[str(tens)]
+            else:
+                tens_word = number_dict[str(tens)]
+                ones_word = number_dict[str(ones)]
+                return f"{tens_word} y {ones_word}"
+        
+        # Para números mayores a 100, devolver el original
+        return num_str
+    
+    # Patrones para diferentes formatos de números
+    patterns = [
+        # Horas (ej: 8:00, 15:30)
+        (r'\b(\d{1,2}):(\d{2})\b', lambda m: f"{convert_numbers_to_text(m.group(1))} {convert_numbers_to_text(m.group(2))}"),
+        # Números enteros simples (ej: 5, 23, 100)
+        (r'\b\d{1,2}\b', replace_number),
+        # Números con unidades comunes (ej: 5 minutos, 3 veces)
+        (r'\b(\d{1,2})\s+(minutos?|segundos?|horas?|veces?|días?)\b', 
+         lambda m: f"{convert_numbers_to_text(m.group(1))} {m.group(2)}"),
+    ]
+    
+    processed_text = text
+    for pattern, replacement in patterns:
+        processed_text = re.sub(pattern, replacement, processed_text)
+    
+    return processed_text
+
+def clean_text_for_tts(text: str) -> str:
+    """
+    Limpia el texto para una mejor pronunciación del TTS.
+    
+    Args:
+        text: El texto original
+        
+    Returns:
+        El texto limpio optimizado para TTS
+    """
+    # Convertir números a texto
+    cleaned_text = convert_numbers_to_text(text)
+    
+    # Limpiar puntuaciones problemáticas
+    cleaned_text = re.sub(r'\.{2,}', '.', cleaned_text)  # Múltiples puntos a uno solo
+    cleaned_text = re.sub(r'—', ',', cleaned_text)  # Guiones largos a comas
+    cleaned_text = re.sub(r'–', ',', cleaned_text)  # Guiones medios a comas
+    cleaned_text = re.sub(r'\s+', ' ', cleaned_text)  # Múltiples espacios a uno solo
+    cleaned_text = cleaned_text.strip()
+    
+    return cleaned_text
 
 if __name__ == "__main__":
     logging.info("Configurando WorkerOptions y ejecutando la aplicación CLI...")
