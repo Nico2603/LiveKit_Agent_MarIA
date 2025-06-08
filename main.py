@@ -1017,6 +1017,14 @@ async def job_entrypoint(job: JobContext):
             username = participant_identity
             logging.info(f"Usando participant.identity completo como nombre: '{username}'")
 
+    # NUEVO: Extraer solo el primer nombre para una conversación más natural
+    if username and username != "Usuario":
+        # Dividir por espacios y tomar solo la primera palabra (primer nombre)
+        first_name = username.split()[0].strip()
+        if first_name:
+            username = first_name
+            logging.info(f"Usando solo el primer nombre para conversación natural: '{username}'")
+
     # MODIFICACIÓN PARA MODO DEV SIN METADATA FLAG
     # Si no se encontró chatSessionId (lo que ocurre si participant_metadata es None o no lo contiene),
     # asignamos un valor por defecto. Esto es útil para desarrollo local con `python main.py dev`
