@@ -602,7 +602,9 @@ class MariaVoiceAgent(Agent):
 
     def _process_closing_message(self, text: str) -> Tuple[str, bool]:
         """
-        Procesa el texto de un mensaje para detectar una señal de cierre de sesión.
+        Procesa el texto de un mensaje para detectar y limpiar una señal de cierre de sesión.
+        Busca la etiqueta [CIERRE_DE_SESION] en el texto, la remueve, y devuelve
+        información sobre si se detectó esta señal.
 
         Args:
             text: El texto del mensaje.
@@ -612,13 +614,98 @@ class MariaVoiceAgent(Agent):
             y un booleano indicando si se detectó la señal de cierre.
         """
         is_closing_message = False
-        if "[CIERRE_DE_SESION]" in text:
-            logging.info(f"Se detectó señal [CIERRE_DE_SESION]")
-            text = text.replace("[CIERRE_DE_SESION]", "").strip()
+        
+        # Detectar automáticamente despedidas naturales y añadir el tag internamente
+        auto_detected_closing = self._detect_natural_closing_message(text)
+        
+        # Si ya contiene la etiqueta manual o se detectó automáticamente
+        if "[CIERRE_DE_SESION]" in text or auto_detected_closing:
             is_closing_message = True
-            if self._username != "Usuario" and self._username not in text:
+            
+            if "[CIERRE_DE_SESION]" in text:
+                logging.info(f"Se detectó señal manual [CIERRE_DE_SESION] en el texto: '{text}'")
+                # Remover completamente la etiqueta y limpiar espacios
+                text = text.replace("[CIERRE_DE_SESION]", "").strip()
+            else:
+                logging.info(f"Se detectó despedida automática en el texto: '{text}'")
+            
+            # Asegurar que hay texto válido para el TTS
+            if not text or len(text.strip()) == 0:
+                # Si el texto quedó vacío, usar un mensaje de despedida genérico
+                text = f"Hasta pronto, {self._username}."
+                logging.info(f"Texto vacío después de procesar cierre, usando despedida genérica: '{text}'")
+            elif self._username != "Usuario" and self._username not in text:
+                # Agregar el nombre del usuario si no está presente
                 text = f"{text.rstrip('.')} {self._username}."
+            
+            logging.info(f"Texto final para TTS después de procesar cierre: '{text}'")
+        
         return text, is_closing_message
+
+    def _detect_natural_closing_message(self, text: str) -> bool:
+        """
+        Detecta automáticamente si un mensaje es una despedida natural
+        basándose en patrones de texto comunes.
+        
+        Args:
+            text: El texto del mensaje a analizar
+            
+        Returns:
+            True si se detecta como mensaje de cierre natural
+        """
+        if not text:
+            return False
+            
+        # Convertir a minúsculas para análisis
+        lower_text = text.lower().strip()
+        
+        # Patrones de despedida con el nombre del usuario
+        username_patterns = [
+            f"gracias por confiar en mí hoy, {self._username.lower()}",
+            f"ha sido un honor acompañarte, {self._username.lower()}",
+            f"que tengas un día tranquilo, {self._username.lower()}",
+            f"hasta pronto, {self._username.lower()}",
+            f"cuídate mucho, {self._username.lower()}",
+        ]
+        
+        # Patrones de despedida generales
+        closing_patterns = [
+            "que las herramientas que exploramos te acompañen",
+            "recuerda que tienes recursos internos muy valiosos",
+            "estoy aquí cuando necesites apoyo con la ansiedad",
+            "que tengas un día tranquilo",
+            "cuídate mucho",
+            "hasta la próxima",
+            "nos vemos pronto",
+        ]
+        
+        # Verificar patrones con nombre de usuario
+        for pattern in username_patterns:
+            if pattern in lower_text:
+                logging.info(f"Detectado patrón de cierre con usuario: '{pattern}'")
+                return True
+        
+        # Verificar patrones generales de despedida
+        for pattern in closing_patterns:
+            if pattern in lower_text:
+                logging.info(f"Detectado patrón de cierre general: '{pattern}'")
+                return True
+        
+        # Detectar mensajes que terminan la conversación de forma natural
+        ending_phrases = [
+            "gracias por confiar en mí",
+            "ha sido un honor acompañarte",
+            "que las herramientas te acompañen",
+            "recuerda que tienes recursos",
+            "estoy aquí cuando necesites",
+        ]
+        
+        for phrase in ending_phrases:
+            if phrase in lower_text and len(lower_text) < 200:  # Mensajes cortos de despedida
+                logging.info(f"Detectada frase de finalización: '{phrase}'")
+                return True
+        
+        return False
 
     def _process_video_suggestion(self, text: str) -> Tuple[str, Optional[Dict[str, str]]]:
         """
