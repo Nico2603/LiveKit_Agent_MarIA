@@ -662,21 +662,81 @@ class MariaVoiceAgent(Agent):
         # Patrones de despedida con el nombre del usuario
         username_patterns = [
             f"gracias por confiar en mí hoy, {self._username.lower()}",
+            f"gracias por compartir conmigo, {self._username.lower()}",
             f"ha sido un honor acompañarte, {self._username.lower()}",
+            f"ha sido un placer acompañarte, {self._username.lower()}",
             f"que tengas un día tranquilo, {self._username.lower()}",
+            f"que tengas un buen día, {self._username.lower()}",
             f"hasta pronto, {self._username.lower()}",
+            f"hasta la próxima, {self._username.lower()}",
             f"cuídate mucho, {self._username.lower()}",
+            f"cuídate bien, {self._username.lower()}",
+            f"nos vemos pronto, {self._username.lower()}",
+            f"espero verte pronto, {self._username.lower()}",
+            f"que descanses, {self._username.lower()}",
+            f"que te vaya bien, {self._username.lower()}",
         ]
         
-        # Patrones de despedida generales
+        # Patrones de despedida generales - frases completas
         closing_patterns = [
             "que las herramientas que exploramos te acompañen",
+            "que las herramientas te acompañen",
+            "que las técnicas que vimos te ayuden",
+            "que los recursos que compartimos te sirvan",
             "recuerda que tienes recursos internos muy valiosos",
+            "recuerda que tienes herramientas valiosas",
+            "recuerda las técnicas que practicamos",
             "estoy aquí cuando necesites apoyo con la ansiedad",
+            "estoy aquí cuando necesites hablar",
+            "estoy aquí cuando me necesites",
+            "siempre puedes volver cuando necesites apoyo",
+            "puedes regresar cuando lo necesites",
             "que tengas un día tranquilo",
+            "que tengas un buen día",
+            "que tengas una buena tarde",
+            "que tengas una buena noche",
             "cuídate mucho",
+            "cuídate bien",
             "hasta la próxima",
+            "hasta pronto",
             "nos vemos pronto",
+            "que descanses bien",
+            "que te vaya muy bien",
+            "que todo salga bien",
+            "espero haberte ayudado",
+            "me alegra haber podido ayudarte",
+            "ha sido un placer acompañarte",
+            "gracias por permitirme acompañarte",
+            "gracias por compartir conmigo",
+        ]
+        
+        # Patrones de finalización con contexto - frases que indican fin de conversación
+        ending_phrases = [
+            "gracias por confiar en mí",
+            "gracias por compartir",
+            "ha sido un honor acompañarte",
+            "ha sido un placer acompañarte",
+            "espero haberte ayudado",
+            "me alegra haber podido ayudarte",
+            "que las herramientas te acompañen",
+            "que las técnicas te ayuden",
+            "recuerda que tienes recursos",
+            "recuerda las herramientas",
+            "estoy aquí cuando necesites",
+            "puedes volver cuando necesites",
+            "siempre puedes regresar",
+            "hasta la próxima sesión",
+            "nos vemos en la próxima",
+            "que tengas un día",
+            "que tengas una buena",
+            "cuídate mucho",
+            "cuídate bien",
+            "hasta pronto",
+            "hasta luego",
+            "nos vemos",
+            "que descanses",
+            "que todo salga bien",
+            "que te vaya bien",
         ]
         
         # Verificar patrones con nombre de usuario
@@ -685,25 +745,32 @@ class MariaVoiceAgent(Agent):
                 logging.info(f"Detectado patrón de cierre con usuario: '{pattern}'")
                 return True
         
-        # Verificar patrones generales de despedida
+        # Verificar patrones generales de despedida (frases completas)
         for pattern in closing_patterns:
             if pattern in lower_text:
                 logging.info(f"Detectado patrón de cierre general: '{pattern}'")
                 return True
         
         # Detectar mensajes que terminan la conversación de forma natural
-        ending_phrases = [
-            "gracias por confiar en mí",
-            "ha sido un honor acompañarte",
-            "que las herramientas te acompañen",
-            "recuerda que tienes recursos",
-            "estoy aquí cuando necesites",
-        ]
+        # Solo para mensajes relativamente cortos (menos de 300 caracteres)
+        if len(lower_text) < 300:
+            for phrase in ending_phrases:
+                if phrase in lower_text:
+                    logging.info(f"Detectada frase de finalización: '{phrase}'")
+                    return True
         
-        for phrase in ending_phrases:
-            if phrase in lower_text and len(lower_text) < 200:  # Mensajes cortos de despedida
-                logging.info(f"Detectada frase de finalización: '{phrase}'")
-                return True
+        # Patrones adicionales para detectar despedidas en contexto
+        # Buscar combinaciones de palabras clave que sugieren cierre
+        farewell_keywords = ["gracias", "acompañar", "ayudar", "confiar", "compartir", "herramientas", "técnicas", "recursos"]
+        closing_keywords = ["cuídate", "hasta", "nos vemos", "pronto", "día", "noche", "tarde", "descanses", "bien"]
+        
+        farewell_count = sum(1 for keyword in farewell_keywords if keyword in lower_text)
+        closing_count = sum(1 for keyword in closing_keywords if keyword in lower_text)
+        
+        # Si hay múltiples palabras clave de despedida Y de cierre, es probable que sea un mensaje de cierre
+        if farewell_count >= 2 and closing_count >= 1 and len(lower_text) < 250:
+            logging.info(f"Detectado mensaje de cierre por combinación de palabras clave (despedida: {farewell_count}, cierre: {closing_count})")
+            return True
         
         return False
 
