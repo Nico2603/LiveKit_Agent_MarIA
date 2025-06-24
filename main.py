@@ -1303,8 +1303,8 @@ async def job_entrypoint(job: JobContext):
             else:
                 logging.info(f"✅ Generando saludo inicial para {username}")
                 
-                # Mensaje de saludo optimizado para ansiedad
-                immediate_greeting = f"¡Hola{' ' + username if username and username != 'Usuario' else ''}! Soy María, tu asistente especializada en manejo de ansiedad. Estoy aquí para escucharte y acompañarte. Cuéntame, ¿qué te ha traído hoy hasta aquí?"
+                # Generar saludo aleatorio de múltiples opciones
+                immediate_greeting = generate_welcome_message(username)
                 
                 # Limpiar el saludo para TTS
                 immediate_greeting_clean = clean_text_for_tts(immediate_greeting)
@@ -1474,6 +1474,71 @@ def convert_numbers_to_text(text: str) -> str:
         processed_text = re.sub(pattern, replacement, processed_text)
     
     return processed_text
+
+def generate_welcome_message(username: str) -> str:
+    """
+    Genera un mensaje de bienvenida aleatorio de múltiples opciones variadas.
+    Todos los mensajes mantienen el tono empático y especializado en ansiedad.
+    
+    Args:
+        username: El nombre del usuario
+        
+    Returns:
+        Un mensaje de bienvenida personalizado
+    """
+    import random
+    
+    # Normalizar el nombre del usuario
+    name_part = f" {username}" if username and username != "Usuario" else ""
+    
+    # Lista de mensajes de bienvenida variados
+    welcome_options = [
+        # Opción original mejorada
+        f"¡Hola{name_part}! Soy María, tu asistente especializada en manejo de ansiedad. Estoy aquí para escucharte y acompañarte. Cuéntame, ¿qué te ha traído hoy hasta aquí?",
+        
+        # Saludos cálidos y directos
+        f"¡Qué gusto conocerte{name_part}! Soy María y me especializo en ayudar con la ansiedad. Este es tu espacio seguro para compartir lo que sientes. ¿Cómo has estado últimamente?",
+        
+        f"¡Hola{name_part}, bienvenido! Soy María, y estoy aquí para acompañarte en el manejo de la ansiedad. Me alegra que hayas decidido buscar apoyo. ¿Qué te gustaría conversar hoy?",
+        
+        f"¡Hola{name_part}! Soy María, tu compañera en este proceso de bienestar emocional. Mi objetivo es ayudarte con herramientas para la ansiedad. ¿Cómo te sientes en este momento?",
+        
+        # Saludos más empáticos
+        f"¡Hola{name_part}! Me llamo María y soy tu asistente especializada en ansiedad. Reconozco tu valentía al estar aquí. ¿Qué es lo que más te inquieta hoy?",
+        
+        f"¡Qué bueno tenerte aquí{name_part}! Soy María, y mi pasión es ayudar a las personas a manejar la ansiedad. Este es un espacio sin juicios. ¿Qué me quieres contar?",
+        
+        f"¡Hola{name_part}! Soy María, y estoy especializada en acompañar a personas como tú en el manejo de la ansiedad. Dar este paso ya es muy valioso. ¿Por dónde empezamos?",
+        
+        # Saludos enfocados en el presente
+        f"¡Hola{name_part}! Soy María, tu guía en técnicas para manejar la ansiedad. Me alegra que estés aquí en este momento. ¿Cómo llegaste hasta esta conversación?",
+        
+        f"¡Bienvenido{name_part}! Soy María, especialista en herramientas para la ansiedad. Este momento que compartes conmigo es importante. ¿Qué te motivó a buscar apoyo hoy?",
+        
+        # Saludos más conversacionales
+        f"¡Hola{name_part}! Soy María, y me dedico a ayudar con la ansiedad de manera práctica y empática. Me da mucho gusto conocerte. ¿Qué tal ha sido tu día?",
+        
+        f"¡Qué alegría saludarte{name_part}! Soy María, tu asistente para el bienestar emocional y manejo de ansiedad. Estoy aquí para escucharte con atención. ¿Qué necesitas hoy?",
+        
+        f"¡Hola{name_part}! Soy María, especializada en acompañamiento para la ansiedad. Es un honor que confíes en mí para este momento. ¿Cómo puedo ayudarte hoy?",
+        
+        # Saludos centrados en fortalezas
+        f"¡Hola{name_part}! Soy María, y trabajo con personas valientes como tú que buscan manejar mejor su ansiedad. Ya diste un gran paso al estar aquí. ¿Qué quieres explorar?",
+        
+        f"¡Bienvenido{name_part}! Soy María, tu aliada en el camino hacia el bienestar emocional. Buscar ayuda muestra mucha sabiduría. ¿Cómo te está afectando la ansiedad últimamente?",
+        
+        # Saludos con enfoque en herramientas
+        f"¡Hola{name_part}! Soy María, especialista en herramientas prácticas para la ansiedad. Juntos podemos encontrar estrategias que te funcionen. ¿Qué situaciones te generan más ansiedad?",
+        
+        f"¡Qué gusto verte{name_part}! Soy María, y mi especialidad es enseñar técnicas efectivas para manejar la ansiedad. Estás en el lugar correcto. ¿Cuándo empezaste a notar la ansiedad?"
+    ]
+    
+    # Seleccionar aleatoriamente una opción
+    selected_greeting = random.choice(welcome_options)
+    
+    logging.info(f"Saludo seleccionado (opción {welcome_options.index(selected_greeting) + 1}/{len(welcome_options)}): {selected_greeting[:50]}...")
+    
+    return selected_greeting
 
 def clean_text_for_tts(text: str) -> str:
     """
