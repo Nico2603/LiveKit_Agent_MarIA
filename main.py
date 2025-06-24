@@ -839,8 +839,33 @@ class MariaVoiceAgent(Agent):
             processed_text_for_tts, is_closing_message = self._process_closing_message(ai_original_response_text)
             processed_text_for_tts, video_payload = self._process_video_suggestion(processed_text_for_tts)
             
-            # Limpiar texto para TTS (convertir números y limpiar puntuaciones)
+            # Procesar el texto para limpieza TTS
             processed_text_for_tts = clean_text_for_tts(processed_text_for_tts)
+            
+            # Verificar si es saludo inicial
+            is_initial_greeting = self._initial_greeting_text is None
+            
+            if is_initial_greeting:
+                logging.info(f"🎯 PRIMER SALUDO DETECTADO - Almacenando texto TTS base")
+                self._initial_greeting_text = processed_text_for_tts
+            
+                                # Log de verificación de consistencia texto-voz
+            logging.info(f"💬 TEXTO EXACTO para mostrar en chat: '{processed_text}'")
+            logging.info(f"🔊 TEXTO EXACTO para convertir a voz: '{processed_text_for_tts}'")
+            if processed_text != processed_text_for_tts:
+                logging.info(f"🔍 DIFERENCIAS TTS detectadas:")
+                logging.info(f"   📝 Chat: {len(processed_text)} caracteres")
+                logging.info(f"   🎤 Voz: {len(processed_text_for_tts)} caracteres")
+            else:
+                logging.info(f"✅ TEXTO IDÉNTICO para chat y voz - {len(processed_text)} caracteres")
+
+            # Crear el payload para enviar al frontend
+            data_payload = {
+                "id": message_id,
+                "text": processed_text,  # <- Este es el texto que se mostrará en el chat
+                "isInitialGreeting": is_initial_greeting,  # Marcar si es saludo inicial
+                "suggestedVideo": suggested_video
+            }
 
             await self._save_message(ai_original_response_text, "assistant", message_id=ai_message_id)
 
@@ -1322,6 +1347,10 @@ async def job_entrypoint(job: JobContext):
                 
                 # Enviar inmediatamente el saludo al frontend
                 logging.info(f"📢 Enviando saludo inmediato (ID: {immediate_greeting_id}): {immediate_greeting}")
+                logging.info(f"💬 TEXTO EXACTO que se mostrará en el chat: '{immediate_greeting}'")
+                logging.info(f"🔊 TEXTO EXACTO que se convertirá a voz: '{immediate_greeting_clean}'")
+                logging.info(f"🔍 Diferencias de limpieza TTS: Original={len(immediate_greeting)} chars, Limpio={len(immediate_greeting_clean)} chars")
+                
                 await agent._send_custom_data("ai_response_generated", {
                     "id": immediate_greeting_id,
                     "text": immediate_greeting,
