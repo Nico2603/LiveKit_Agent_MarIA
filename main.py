@@ -43,14 +43,7 @@ from livekit.rtc import RemoteParticipant, Room
 # Importar plugins de LiveKit
 from livekit.plugins import deepgram, openai, silero, cartesia
 
-# Importar tavus con manejo de errores
-try:
-    from livekit.plugins import tavus
-    TAVUS_AVAILABLE = True
-except ImportError as e:
-    logging.warning(f"Plugin tavus no disponible: {e}. El avatar de Tavus será deshabilitado.")
-    tavus = None
-    TAVUS_AVAILABLE = False
+# TABUS removido - ahora usando avatar CSS en frontend
 
 # Contenido de config.py movido aquí
 from typing import Optional
@@ -82,9 +75,7 @@ class AppSettings(BaseSettings):
     cartesia_speed: float = Field(1.0, env='CARTESIA_SPEED')
     cartesia_emotion: Optional[str] = Field(None, env='CARTESIA_EMOTION')
 
-    # Tavus Avatar
-    tavus_api_key: Optional[str] = Field(None, env='TAVUS_API_KEY')
-    tavus_replica_id: Optional[str] = Field(None, env='TAVUS_REPLICA_ID')
+    # Tavus Avatar - REMOVIDO (ahora usando avatar CSS)
 
     # Deepgram STT
     deepgram_api_key: str = Field(..., env='DEEPGRAM_API_KEY')
@@ -110,7 +101,7 @@ try:
     logging.info(f"🌐 API Base URL: {settings.api_base_url}")
     logging.info(f"🤖 OpenAI Model: {settings.openai_model}")
     logging.info(f"🎵 Cartesia Voice ID: {settings.cartesia_voice_id}")
-    logging.info(f"🧊 Tavus disponible: {TAVUS_AVAILABLE}")
+    logging.info("🎭 Usando avatar CSS en frontend")
 except Exception as e:
     logging.error(f"❌ Error cargando configuración: {e}")
     # Crear configuración por defecto para desarrollo
@@ -130,8 +121,7 @@ except Exception as e:
             self.cartesia_language = os.getenv('CARTESIA_LANGUAGE', 'es')
             self.cartesia_speed = float(os.getenv('CARTESIA_SPEED', '1.0'))
             self.cartesia_emotion = os.getenv('CARTESIA_EMOTION')
-            self.tavus_api_key = os.getenv('TAVUS_API_KEY')
-            self.tavus_replica_id = os.getenv('TAVUS_REPLICA_ID')
+            # Tavus removido - usando avatar CSS
             self.deepgram_api_key = os.getenv('DEEPGRAM_API_KEY', '')
             self.deepgram_model = os.getenv('DEEPGRAM_MODEL', 'nova-2')
     
@@ -335,20 +325,13 @@ class MariaVoiceAgent(Agent):
             
             if self._room and self._room.local_participant:
                  
-                # Determinar si estamos usando Tavus
-                using_tavus = bool(settings.tavus_api_key and settings.tavus_replica_id)
-                
-                if using_tavus:
-                    # Enviar en formato Tavus
-                    tavus_event = self._convert_to_tavus_format(data_type, data_payload)
-                    message_data = tavus_event
-                    if message_throttler.should_log(f'tavus_event_{data_type}', 'datachannel_success'):
-                        logging.debug(f"► Enviando evento Tavus: {data_type}")
-                else:
-                    # Enviar en formato directo
-                    message_data = {"type": data_type, "payload": data_payload}
-                    if message_throttler.should_log(f'direct_event_{data_type}', 'datachannel_success'):
-                        logging.debug(f"► Enviando evento directo: {data_type}")
+                # Enviar en formato directo (Tavus removido)
+                message_data = {
+                    "type": data_type,
+                    **data_payload  # Expandir directamente el payload
+                }
+                if message_throttler.should_log(f'direct_event_{data_type}', 'datachannel_success'):
+                    logging.debug(f"► Enviando evento directo: {data_type}")
                 
                 await asyncio.wait_for(
                     self._room.local_participant.publish_data(json.dumps(message_data)),
@@ -366,62 +349,10 @@ class MariaVoiceAgent(Agent):
         except Exception as e:
             logging.error(f"Excepción al enviar DataChannel: {e}", exc_info=True)
 
-    def _convert_to_tavus_format(self, data_type: str, data_payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Convierte eventos del formato directo al formato Tavus.
-        
-        Args:
-            data_type: Tipo de evento directo
-            data_payload: Payload del evento
-            
-        Returns:
-            Evento en formato Tavus
-        """
-        if data_type == "ai_response_generated":
-            return {
-                "message_type": "conversation",
-                "event_type": "conversation.replica.response",
-                "conversation_id": self._chat_session_id,
-                "inference_id": data_payload.get("id", f"inference-{int(time.time() * 1000)}"),
-                "properties": {
-                    "text": data_payload.get("text", ""),
-                    "isInitialGreeting": data_payload.get("isInitialGreeting", False),
-                    "suggestedVideo": data_payload.get("suggestedVideo")
-                }
-            }
-        elif data_type == "tts_started":
-            return {
-                "message_type": "conversation",
-                "event_type": "conversation.replica.started_speaking",
-                "conversation_id": self._chat_session_id,
-                "inference_id": data_payload.get("messageId", f"inference-{int(time.time() * 1000)}")
-            }
-        elif data_type == "tts_ended":
-            return {
-                "message_type": "conversation", 
-                "event_type": "conversation.replica.stopped_speaking",
-                "conversation_id": self._chat_session_id,
-                "inference_id": data_payload.get("messageId", f"inference-{int(time.time() * 1000)}"),
-                "properties": {
-                    "isClosing": data_payload.get("isClosing", False)
-                }
-            }
-        elif data_type == "user_transcription_result":
-            return {
-                "message_type": "conversation",
-                "event_type": "conversation.user.transcript",
-                "conversation_id": self._chat_session_id,
-                "properties": {
-                    "transcript": data_payload.get("transcript", "")
-                }
-            }
-        else:
-            # Para eventos no mapeados, usar formato directo como fallback
-            logging.warning(f"Tipo de evento no mapeado para Tavus: {data_type}, usando formato directo")
-            return {"type": data_type, "payload": data_payload}
+    # Método _convert_to_tavus_format removido - ya no necesario
 
     async def _handle_frontend_data(self, payload: bytes, participant: 'livekit.RemoteParticipant'):
-        """Maneja los DataChannels enviados desde el frontend con manejo mejorado de eventos Tavus."""
+        """Maneja los DataChannels enviados desde el frontend (formato directo, sin Tavus)."""
         # CORREGIDO: Usar la identidad del agente local almacenada para ignorar mensajes propios
         if participant and self._local_agent_identity and participant.identity == self._local_agent_identity:
              if message_throttler.should_log(f"ignore_own_message_{participant.identity}", 'default'):
@@ -437,77 +368,14 @@ class MariaVoiceAgent(Agent):
             if message_throttler.should_log(f"datachannel_received_{participant_name}", 'default'):
                 logging.debug(f"DataChannel recibido: Participante='{participant_name}', Payload='{data_str[:100]}...'")
 
-            # Extraer campos del mensaje
+            # Extraer tipo de mensaje
             message_type = message_data.get("type")
-            tavus_message_type = message_data.get("message_type")
-            tavus_event_type = message_data.get("event_type")
 
-            # Manejar eventos del sistema Tavus con throttling optimizado
-            if tavus_message_type == 'system':
-                if tavus_event_type == 'system.replica_joined':
-                    logging.info("✅ Sistema: Avatar se unió a la conversación")
-                    return
-                elif tavus_event_type == 'system.replica_present':
-                    # Usar el throttling avanzado para replica_present
-                    attempt = message_data.get('properties', {}).get('attempt', 1)
-                    if message_throttler.should_log('system.replica_present', 'system.replica_present', attempt):
-                        stats = message_throttler.get_stats('system.replica_present')
-                        logging.info(f"✅ Sistema: Avatar presente (intento {attempt}, total eventos: {stats['total_events']})")
-                    return
-                elif tavus_event_type == 'system.replica_ready':
-                    logging.info("✅ Sistema: Avatar listo para interacción")
-                    return
-                elif tavus_event_type == 'system.shutdown':
-                    logging.info("✅ Sistema: Conversación terminada")
-                    return
-                elif tavus_event_type == 'system.heartbeat':
-                    # Heartbeat con throttling muy agresivo
-                    if message_throttler.should_log('system.heartbeat', 'system.heartbeat'):
-                        logging.debug("🔄 Heartbeat del sistema recibido")
-                    return
-                else:
-                    # Otros eventos de sistema - throttling para no hacer spam
-                    if message_throttler.should_log(f'system_unknown_{tavus_event_type}', 'default'):
-                        logging.info(f"ℹ️ Evento de sistema no manejado: {tavus_event_type}")
-                    return
-            
-            # Manejar eventos de conversación (importantes, menos throttling)
-            if tavus_message_type == 'conversation':
-                if tavus_event_type == 'conversation.replica.started_speaking':
-                    if message_throttler.should_log('replica_started_speaking', 'tts_events'):
-                        logging.info("🔊 Avatar comenzó a hablar") 
-                    return
-                elif tavus_event_type == 'conversation.replica.stopped_speaking':
-                    if message_throttler.should_log('replica_stopped_speaking', 'tts_events'):
-                        logging.info("🔇 Avatar terminó de hablar")
-                    return
-                elif tavus_event_type == 'conversation.replica.response':
-                    logging.info("💬 Respuesta del avatar recibida")  # Siempre importante
-                    return
-                elif tavus_event_type == 'conversation.respond':
-                    # Manejo de mensajes del usuario - siempre importante
-                    user_text = message_data.get("properties", {}).get("text")
-                    if user_text and hasattr(self, '_agent_session'):
-                        logging.info(f"✅ Procesando mensaje de usuario (Tavus): '{user_text[:50]}...'")
-                        await self._send_user_transcript_and_save(user_text)
-                        logging.info(f"🤖 Generando respuesta para: '{user_text[:50]}...'")
-                        self._agent_session.generate_reply(user_input=user_text)
-                    elif not hasattr(self, '_agent_session'):
-                        logging.warning("❌ _agent_session no disponible.")
-                    else:
-                        logging.warning(f"❌ Mensaje vacío del participante: {participant_name}")
-                    return
-                else:
-                    # Eventos de conversación no reconocidos - throttling moderado
-                    if message_throttler.should_log(f'conversation_unknown_{tavus_event_type}', 'default'):
-                        logging.warning(f"⚠️ Evento de conversación no reconocido: '{tavus_event_type}'")
-                    return
-
-            # Manejar formato original (sin Tavus)
+            # Manejar formato directo (sin Tavus)
             if message_type == "submit_user_text":
-                user_text = message_data.get("payload", {}).get("text")
+                user_text = message_data.get("text") or message_data.get("payload", {}).get("text")
                 if user_text and hasattr(self, '_agent_session'):
-                    logging.info(f"✅ Procesando mensaje de usuario (original): '{user_text[:50]}...'")
+                    logging.info(f"✅ Procesando mensaje de usuario: '{user_text[:50]}...'")
                     await self._send_user_transcript_and_save(user_text)
                     logging.info(f"🤖 Generando respuesta para: '{user_text[:50]}...'")
                     self._agent_session.generate_reply(user_input=user_text)
@@ -948,7 +816,7 @@ def parse_participant_metadata(metadata_str: Optional[str]) -> Dict[str, Optiona
     """Parsea los metadatos del participante (JSON string) en un diccionario."""
     if not metadata_str:
         logging.warning("No se proporcionaron metadatos para el participante o están vacíos.")
-        return {"userId": None, "username": None, "chatSessionId": None, "tavusReplicaId": None, "targetParticipantIdentity": None}
+        return {"userId": None, "username": None, "chatSessionId": None, "targetParticipantIdentity": None}
 
     try:
         metadata = json.loads(metadata_str)
@@ -956,7 +824,6 @@ def parse_participant_metadata(metadata_str: Optional[str]) -> Dict[str, Optiona
         user_id = metadata.get("userId")
         username = metadata.get("username")
         chat_session_id = metadata.get("chatSessionId")
-        tavus_replica_id = metadata.get("tavusReplicaId")
         target_participant_identity = metadata.get("targetParticipantIdentity")
 
         # Validaciones de tipo (opcional pero recomendado para robustez)
@@ -969,9 +836,6 @@ def parse_participant_metadata(metadata_str: Optional[str]) -> Dict[str, Optiona
         if chat_session_id is not None and not isinstance(chat_session_id, str):
             logging.warning(f"chatSessionId esperado como string, se recibió {type(chat_session_id)}. Se usará None.")
             chat_session_id = None
-        if tavus_replica_id is not None and not isinstance(tavus_replica_id, str):
-            logging.warning(f"tavusReplicaId esperado como string, se recibió {type(tavus_replica_id)}. Se usará None.")
-            tavus_replica_id = None
         if target_participant_identity is not None and not isinstance(target_participant_identity, str):
             logging.warning(f"targetParticipantIdentity esperado como string, se recibió {type(target_participant_identity)}. Se usará None.")
             target_participant_identity = None
@@ -980,15 +844,14 @@ def parse_participant_metadata(metadata_str: Optional[str]) -> Dict[str, Optiona
             "userId": user_id,
             "username": username,
             "chatSessionId": chat_session_id,
-            "tavusReplicaId": tavus_replica_id,
             "targetParticipantIdentity": target_participant_identity,
         }
     except json.JSONDecodeError:
         logging.error(f"Error al decodificar metadatos JSON del participante: {metadata_str}")
-        return {"userId": None, "username": None, "chatSessionId": None, "tavusReplicaId": None, "targetParticipantIdentity": None}
+        return {"userId": None, "username": None, "chatSessionId": None, "targetParticipantIdentity": None}
     except Exception as e:
         logging.error(f"Error inesperado al parsear metadatos del participante: {e}", exc_info=True)
-        return {"userId": None, "username": None, "chatSessionId": None, "tavusReplicaId": None, "targetParticipantIdentity": None}
+        return {"userId": None, "username": None, "chatSessionId": None, "targetParticipantIdentity": None}
 
 async def _setup_plugins(job: JobContext) -> Tuple[Optional[stt.STT], Optional[llm.LLM], Optional[vad.VAD], Optional[tts.TTS]]:
     """
@@ -1034,41 +897,7 @@ async def _setup_plugins(job: JobContext) -> Tuple[Optional[stt.STT], Optional[l
         logging.error(f"❌ Error crítico configurando plugins: {e_plugins}", exc_info=True)
         return None, None, None, None
 
-async def _setup_and_start_tavus_avatar(
-    agent_session_instance: AgentSession,
-    room: 'livekit.Room',
-    app_settings: 'AppSettings'
-) -> Optional['tavus.AvatarSession']:
-    """Configura e inicia el avatar de Tavus si las credenciales están presentes en app_settings."""
-    if not TAVUS_AVAILABLE:
-        logging.warning("Plugin de Tavus no está disponible. El avatar de Tavus será deshabilitado.")
-        return None
-        
-    if not (app_settings.tavus_api_key and app_settings.tavus_replica_id):
-        logging.warning("Faltan TAVUS_API_KEY o TAVUS_REPLICA_ID en la configuración. El avatar de Tavus no se iniciará.")
-        return None
-
-    logging.info(f"Configurando Tavus AvatarSession con Replica ID: {app_settings.tavus_replica_id}")
-    
-    # Configuración básica para Tavus
-    tavus_avatar = tavus.AvatarSession(
-        replica_id=app_settings.tavus_replica_id,
-        api_key=app_settings.tavus_api_key,
-    )
-    
-    try:
-        logging.info("Iniciando Tavus AvatarSession...")
-        await tavus_avatar.start(agent_session=agent_session_instance, room=room)
-        
-        # Esperar a que el avatar esté completamente cargado
-        logging.info("Esperando a que el avatar de Tavus se conecte completamente...")
-        await asyncio.sleep(2)  # Tiempo para estabilización
-        
-        logging.info("Tavus AvatarSession iniciada y avatar listo para interacción.")
-        return tavus_avatar
-        
-    except Exception as e_tavus:
-        logging.error(f"Error al iniciar Tavus AvatarSession: {e_tavus}", exc_info=True)
+# Función _setup_and_start_tavus_avatar removida - usando avatar CSS en frontend
         return None
 
 async def find_target_participant_in_room(room: Room, identity_str: str, timeout: float = 60.0) -> Optional[RemoteParticipant]:
@@ -1254,24 +1083,8 @@ async def job_entrypoint(job: JobContext):
 
         agent_session.on("session_ended", on_session_end_handler)
 
-        tavus_avatar_session = None
-        # La condición para configurar Tavus ahora usa directamente settings y verifica disponibilidad
-        tavus_configured = bool(TAVUS_AVAILABLE and settings.tavus_api_key and settings.tavus_replica_id)
-
-        if tavus_configured:
-            logging.info("Intentando configurar y arrancar el avatar de Tavus...")
-            tavus_avatar_session = await _setup_and_start_tavus_avatar(
-                agent_session_instance=agent_session,
-                room=job.room,
-                app_settings=settings # Pasar la instancia de settings #
-            )
-            if tavus_avatar_session:
-                logging.info("Avatar de Tavus configurado y arrancado.")
-            else:
-                logging.warning("No se pudo arrancar el avatar de Tavus. El audio del agente se usará.")
-                tavus_configured = False # Actualizar si Tavus falló
-        else:
-            logging.info("No se configuraron las variables de entorno para el avatar de Tavus. Saltando.")
+        # Tavus removido - usando avatar CSS en frontend
+        logging.info("🎭 Usando avatar CSS visual en frontend (Tavus removido)")
 
         # Configurar RoomInputOptions y RoomOutputOptions como especificaste
         room_input_options = RoomInputOptions(

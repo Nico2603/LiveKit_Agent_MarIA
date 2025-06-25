@@ -1,10 +1,9 @@
-python-dotenv
-aiohttp
 livekit-agents
 livekit-plugins-deepgram
 livekit-plugins-openai
 livekit-plugins-silero
 livekit-plugins-cartesia
-livekit-plugins-tavus
-openai
-pydantic-settings 
+livekit-rtc
+pydantic-settings
+python-dotenv
+aiohttp 
