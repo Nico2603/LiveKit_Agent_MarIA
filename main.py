@@ -377,9 +377,11 @@ class MariaVoiceAgent(Agent):
             # Extraer tipo de mensaje
             message_type = message_data.get("type")
 
-            # Manejar formato directo (sin Tavus)
+            # Manejar mensajes de texto del usuario
             if message_type == "submit_user_text":
-                user_text = message_data.get("text") or message_data.get("payload", {}).get("text")
+                user_text = message_data.get("text")
+                logging.info(f"📨 Mensaje de usuario recibido: submit_user_text")
+                
                 if user_text and hasattr(self, '_agent_session'):
                     logging.info(f"✅ Procesando mensaje de usuario: '{user_text[:50]}...'")
                     await self._send_user_transcript_and_save(user_text)
