@@ -319,35 +319,41 @@ class MariaVoiceAgent(Agent):
             data_payload: El contenido del mensaje.
         """
         try:
-            # Solo log detallado para eventos importantes
-            if message_throttler.should_log(f'send_data_{data_type}', 'datachannel_success'):
-                logging.debug(f"Enviando DataChannel: type={data_type}")
+            # Log más detallado para debug
+            logging.info(f"🔧 _send_custom_data iniciado: type='{data_type}', payload={data_payload}")
+            
+            # Verificar estado de la room
+            logging.info(f"🔍 Estado self._room: {self._room is not None}")
+            logging.info(f"🔍 Estado self._room.local_participant: {self._room.local_participant is not None if self._room else 'N/A'}")
             
             if self._room and self._room.local_participant:
                  
+                logging.info("✅ Room y local_participant están disponibles")
+                
                 # Enviar en formato directo (Tavus removido)
                 message_data = {
                     "type": data_type,
                     **data_payload  # Expandir directamente el payload
                 }
-                if message_throttler.should_log(f'direct_event_{data_type}', 'datachannel_success'):
-                    logging.debug(f"► Enviando evento directo: {data_type}")
+                logging.info(f"📦 Mensaje preparado para envío: {message_data}")
                 
+                # Serializar a JSON
+                json_message = json.dumps(message_data)
+                logging.info(f"📄 JSON serializado (primeros 200 chars): {json_message[:200]}")
+                
+                logging.info(f"🚀 Enviando via DataChannel (timeout: {DEFAULT_DATA_PUBLISH_TIMEOUT}s)...")
                 await asyncio.wait_for(
-                    self._room.local_participant.publish_data(json.dumps(message_data)),
+                    self._room.local_participant.publish_data(json_message),
                     timeout=DEFAULT_DATA_PUBLISH_TIMEOUT
                 )
                 
-                # Solo log de éxito para eventos importantes o con throttling
-                if data_type in ['ai_response_generated', 'user_transcription_result'] or \
-                   message_throttler.should_log('datachannel_success_general', 'datachannel_success'):
-                    logging.debug(f"► Mensaje enviado exitosamente via DataChannel")
+                logging.info(f"✅ Mensaje '{data_type}' enviado exitosamente via DataChannel")
             else:
                  logging.warning("No se pudo enviar custom data: room no está disponible.")
         except asyncio.TimeoutError:
-            logging.error(f"Timeout al enviar DataChannel: type={data_type}")
+            logging.error(f"❌ TIMEOUT al enviar DataChannel: type={data_type}, timeout={DEFAULT_DATA_PUBLISH_TIMEOUT}s")
         except Exception as e:
-            logging.error(f"Excepción al enviar DataChannel: {e}", exc_info=True)
+            logging.error(f"❌ EXCEPCIÓN al enviar DataChannel: {e}", exc_info=True)
 
     # Método _convert_to_tavus_format removido - ya no necesario
 
@@ -1130,27 +1136,38 @@ async def job_entrypoint(job: JobContext):
             agent.register_data_received_event()
             
             # AGREGADO: Generar saludo inicial automáticamente
-            logging.info("Generando saludo inicial...")
+            logging.info("🚀 INICIANDO SECUENCIA DE SALUDO INICIAL...")
             
             # Esperar un poco para que todo el sistema se estabilice
+            logging.info("⏳ Esperando estabilización del sistema (2 segundos)...")
             await asyncio.sleep(2)
             
             # Verificar que la conexión esté estable antes de generar el saludo
+            logging.info(f"🔍 Verificando estado del job.room: {job.room is not None}")
+            logging.info(f"🔍 Verificando estado del job.room.local_participant: {job.room.local_participant is not None if job.room else 'N/A'}")
+            
             if not job.room or not job.room.local_participant:
                 logging.error("❌ No se puede generar saludo inicial: room o local_participant no disponible")
             else:
-                logging.info(f"✅ Generando saludo inicial para {username}")
+                logging.info(f"✅ Job room está disponible, generando saludo inicial para '{username}'")
                 
                 # Generar saludo aleatorio de múltiples opciones
+                logging.info("📝 Generando mensaje de bienvenida...")
                 immediate_greeting = generate_welcome_message(username)
+                logging.info(f"💬 Saludo generado: '{immediate_greeting}'")
                 
                 # Limpiar el saludo para TTS
                 immediate_greeting_clean = clean_text_for_tts(immediate_greeting)
+                logging.info(f"🧹 Saludo limpio para TTS: '{immediate_greeting_clean}'")
                 
                 # Crear mensaje del saludo inmediato
                 immediate_greeting_id = f"immediate-greeting-{int(time.time() * 1000)}"
+                logging.info(f"🆔 ID del saludo inicial: '{immediate_greeting_id}'")
                 
                 # Verificar que tenemos room disponible antes de enviar
+                logging.info(f"🔍 Verificando estado del agent._room: {agent._room is not None}")
+                logging.info(f"🔍 Verificando estado del agent._room.local_participant: {agent._room.local_participant is not None if agent._room else 'N/A'}")
+                
                 if not agent._room:
                     logging.error("❌ No hay room disponible para enviar saludo inicial")
                 elif not agent._room.local_participant:
@@ -1159,16 +1176,27 @@ async def job_entrypoint(job: JobContext):
                     logging.info(f"✅ Room y local_participant disponibles para enviar saludo")
                 
                 # Enviar inmediatamente el saludo al frontend
-                logging.info(f"📢 Enviando saludo inmediato (ID: {immediate_greeting_id}): {immediate_greeting}")
+                logging.info(f"📢 ENVIANDO SALUDO INMEDIATO AL FRONTEND...")
+                logging.info(f"🆔 ID: '{immediate_greeting_id}'")
                 logging.info(f"💬 TEXTO EXACTO que se mostrará en el chat: '{immediate_greeting}'")
                 logging.info(f"🔊 TEXTO EXACTO que se convertirá a voz: '{immediate_greeting_clean}'")
                 logging.info(f"🔍 Diferencias de limpieza TTS: Original={len(immediate_greeting)} chars, Limpio={len(immediate_greeting_clean)} chars")
                 
-                await agent._send_custom_data("ai_response_generated", {
+                # Preparar payload
+                saludo_payload = {
                     "id": immediate_greeting_id,
                     "text": immediate_greeting,
                     "isInitialGreeting": True
-                })
+                }
+                logging.info(f"📦 Payload del saludo: {saludo_payload}")
+                
+                # Enviar al frontend
+                try:
+                    logging.info("🚀 Llamando a agent._send_custom_data...")
+                    await agent._send_custom_data("ai_response_generated", saludo_payload)
+                    logging.info("✅ agent._send_custom_data completado exitosamente")
+                except Exception as e:
+                    logging.error(f"❌ Error en agent._send_custom_data: {e}", exc_info=True)
                 
                 # Marcar como saludo inicial procesado
                 agent._initial_greeting_text = immediate_greeting_clean
