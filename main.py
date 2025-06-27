@@ -869,14 +869,23 @@ async def _setup_plugins(job: JobContext) -> Tuple[Optional[stt.STT], Optional[l
     try:
         logging.info("🔧 Configurando plugins del agente...")
         
-        stt_plugin = deepgram.STT(model=settings.deepgram_model, language="es", interim_results=True)
+        stt_plugin = deepgram.STT(
+            model=settings.deepgram_model, 
+            language="es", 
+            interim_results=True,
+            smart_format=True,
+            punctuate=True,
+            utterance_end_ms=1000,  # Esperar 1 segundo de silencio antes de finalizar utterance
+            vad_events=True,
+            endpointing=300         # Tiempo mínimo antes de endpoint en ms
+        )
         llm_plugin = openai.LLM(model=settings.openai_model)
         
         vad_plugin = silero.VAD.load(
-            prefix_padding_duration=0.1,    # 100ms
-            min_silence_duration=0.7,       # 700ms (reemplaza min_silence_duration_ms y post_speech_pad_ms)
-            activation_threshold=0.5,       # Mismo valor que positive_speech_threshold
-            min_speech_duration=0.25        # 250ms
+            prefix_padding_duration=0.2,    # 200ms para capturar inicio completo
+            min_silence_duration=1.5,       # 1500ms - más tiempo para pausas naturales
+            activation_threshold=0.4,       # Más sensible para detectar voz suave
+            min_speech_duration=0.15        # 150ms - detectar palabras más cortas
             # sample_rate y force_cpu usarán los valores por defecto (16000 y True respectivamente)
         )
 
