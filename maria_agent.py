@@ -16,9 +16,10 @@ from livekit.agents import Agent, AgentSession, llm
 from livekit.rtc import RemoteParticipant, Room
 
 # Importar módulos locales
-from config import SAVE_MESSAGE_MAX_RETRIES, SAVE_MESSAGE_RETRY_DELAY, DEFAULT_DATA_PUBLISH_TIMEOUT
+from config import SAVE_MESSAGE_MAX_RETRIES, SAVE_MESSAGE_RETRY_DELAY, DEFAULT_DATA_PUBLISH_TIMEOUT, PERFORMANCE_CONFIG
 from throttler import message_throttler
 from text_utils import clean_text_for_tts, detect_natural_closing_message, generate_welcome_message
+from http_session_manager import http_session_manager, TimeoutManager
 
 # Cargar la plantilla del prompt del sistema desde el archivo
 try:
@@ -213,47 +214,60 @@ class MariaVoiceAgent(Agent):
     async def _send_custom_data(self, data_type: str, data_payload: Dict[str, Any]):
         """
         Envía datos personalizados al frontend a través de un DataChannel.
+        Implementa control de back-pressure y timeouts mejorados.
 
         Args:
             data_type: El tipo de mensaje a enviar (ej. "tts_started", "user_transcription_result").
             data_payload: El contenido del mensaje.
         """
-        try:
-            # Log más detallado para debug
-            logging.info(f"🔧 _send_custom_data iniciado: type='{data_type}', payload={data_payload}")
-            
-            # Verificar estado de la room
-            logging.info(f"🔍 Estado self._room: {self._room is not None}")
-            logging.info(f"🔍 Estado self._room.local_participant: {self._room.local_participant is not None if self._room else 'N/A'}")
-            
-            if self._room and self._room.local_participant:
-                 
-                logging.info("✅ Room y local_participant están disponibles")
-                
-                # Enviar en formato directo
-                message_data = {
-                    "type": data_type,
-                    **data_payload  # Expandir directamente el payload
-                }
-                logging.info(f"📦 Mensaje preparado para envío: {message_data}")
-                
-                # Serializar a JSON
-                json_message = json.dumps(message_data)
-                logging.info(f"📄 JSON serializado (primeros 200 chars): {json_message[:200]}")
-                
-                logging.info(f"🚀 Enviando via DataChannel (timeout: {DEFAULT_DATA_PUBLISH_TIMEOUT}s)...")
-                await asyncio.wait_for(
-                    self._room.local_participant.publish_data(json_message),
-                    timeout=DEFAULT_DATA_PUBLISH_TIMEOUT
-                )
-                
-                logging.info(f"✅ Mensaje '{data_type}' enviado exitosamente via DataChannel")
-            else:
-                 logging.warning("No se pudo enviar custom data: room no está disponible.")
-        except asyncio.TimeoutError:
-            logging.error(f"❌ TIMEOUT al enviar DataChannel: type={data_type}, timeout={DEFAULT_DATA_PUBLISH_TIMEOUT}s")
-        except Exception as e:
-            logging.error(f"❌ EXCEPCIÓN al enviar DataChannel: {e}", exc_info=True)
+        # Usar control de concurrencia para DataChannel
+        async with http_session_manager.controlled_data_channel(f"send_{data_type}"):
+            # Usar timeout mejorado con TimeoutManager
+            async with TimeoutManager.timeout_shield(
+                PERFORMANCE_CONFIG['data_channel_timeout'], 
+                f"DataChannel_{data_type}"
+            ):
+                try:
+                    # Log más detallado para debug
+                    logging.info(f"🔧 _send_custom_data iniciado: type='{data_type}', payload={data_payload}")
+                    
+                    # Verificar estado de la room
+                    logging.debug(f"🔍 Estado self._room: {self._room is not None}")
+                    logging.debug(f"🔍 Estado self._room.local_participant: {self._room.local_participant is not None if self._room else 'N/A'}")
+                    
+                    if self._room and self._room.local_participant:
+                         
+                        logging.info("✅ Room y local_participant están disponibles")
+                        
+                        # Enviar en formato directo
+                        message_data = {
+                            "type": data_type,
+                            **data_payload  # Expandir directamente el payload
+                        }
+                        logging.debug(f"📦 Mensaje preparado para envío: {message_data}")
+                        
+                        # Serializar a JSON
+                        json_message = json.dumps(message_data)
+                        logging.debug(f"📄 JSON serializado (primeros 200 chars): {json_message[:200]}")
+                        
+                        logging.info(f"🚀 Enviando via DataChannel (timeout: {PERFORMANCE_CONFIG['data_channel_timeout']}s)...")
+                        
+                        # Usar timeout interno adicional como respaldo
+                        await asyncio.wait_for(
+                            self._room.local_participant.publish_data(json_message),
+                            timeout=PERFORMANCE_CONFIG['data_channel_timeout'] - 1  # 1s menos para permitir manejo interno
+                        )
+                        
+                        logging.info(f"✅ Mensaje '{data_type}' enviado exitosamente via DataChannel")
+                    else:
+                         logging.warning("No se pudo enviar custom data: room no está disponible.")
+                         
+                except asyncio.TimeoutError:
+                    logging.error(f"❌ TIMEOUT al enviar DataChannel: type={data_type}, timeout={PERFORMANCE_CONFIG['data_channel_timeout']}s")
+                    raise
+                except Exception as e:
+                    logging.error(f"❌ EXCEPCIÓN al enviar DataChannel: {e}", exc_info=True)
+                    raise
 
     async def _handle_frontend_data(self, payload: bytes, participant: 'livekit.RemoteParticipant'):
         """Maneja los DataChannels enviados desde el frontend."""
@@ -353,33 +367,41 @@ class MariaVoiceAgent(Agent):
         attempts = 0
         while attempts < SAVE_MESSAGE_MAX_RETRIES:
             attempts += 1
-            try:
-                async with self._http_session.post(f"{self._base_url}/api/messages", json=payload) as resp:
-                    if resp.status == 201:
-                        logging.info(f"Mensaje (ID: {message_id}) guardado exitosamente en intento {attempts}.")
-                        return
+            
+            # Usar control de concurrencia HTTP
+            async with http_session_manager.controlled_request(f"save_message_{attempts}"):
+                # Usar timeout con gestión mejorada
+                async with TimeoutManager.timeout_shield(
+                    PERFORMANCE_CONFIG['message_save_timeout'], 
+                    f"save_message_{message_id}_{attempts}"
+                ):
+                    try:
+                        async with self._http_session.post(f"{self._base_url}/api/messages", json=payload) as resp:
+                            if resp.status == 201:
+                                logging.info(f"Mensaje (ID: {message_id}) guardado exitosamente en intento {attempts}.")
+                                return
 
-                    error_text = await resp.text()
-                    if resp.status >= 500: # Errores de servidor, reintentables
-                        logging.warning(f"Intento {attempts}/{SAVE_MESSAGE_MAX_RETRIES} fallido al guardar mensaje (ID: {message_id}). Status: {resp.status}. Error: {error_text}")
+                            error_text = await resp.text()
+                            if resp.status >= 500: # Errores de servidor, reintentables
+                                logging.warning(f"Intento {attempts}/{SAVE_MESSAGE_MAX_RETRIES} fallido al guardar mensaje (ID: {message_id}). Status: {resp.status}. Error: {error_text}")
+                                if attempts == SAVE_MESSAGE_MAX_RETRIES:
+                                    logging.error(f"Error final del servidor ({resp.status}) al guardar mensaje (ID: {message_id}) después de {SAVE_MESSAGE_MAX_RETRIES} intentos: {error_text}")
+                                    return
+                                await TimeoutManager.cancel_safe_sleep(SAVE_MESSAGE_RETRY_DELAY * (2**(attempts - 1)), f"retry_delay_{attempts}")
+                            else: # Errores de cliente (4xx) u otros no reintentables por código de estado
+                                logging.error(f"Error no reintentable del cliente ({resp.status}) al guardar mensaje (ID: {message_id}): {error_text}")
+                                return
+
+                    except aiohttp.ClientError as e_http: # Errores de red/conexión de aiohttp
+                        logging.warning(f"Excepción de red en intento {attempts}/{SAVE_MESSAGE_MAX_RETRIES} al guardar mensaje (ID: {message_id}): {e_http}")
                         if attempts == SAVE_MESSAGE_MAX_RETRIES:
-                            logging.error(f"Error final del servidor ({resp.status}) al guardar mensaje (ID: {message_id}) después de {SAVE_MESSAGE_MAX_RETRIES} intentos: {error_text}")
+                            logging.error(f"Excepción final de red al guardar mensaje (ID: {message_id}) después de {SAVE_MESSAGE_MAX_RETRIES} intentos: {e_http}", exc_info=True)
                             return
-                        await asyncio.sleep(SAVE_MESSAGE_RETRY_DELAY * (2**(attempts - 1)))
-                    else: # Errores de cliente (4xx) u otros no reintentables por código de estado
-                        logging.error(f"Error no reintentable del cliente ({resp.status}) al guardar mensaje (ID: {message_id}): {error_text}")
+                        await TimeoutManager.cancel_safe_sleep(SAVE_MESSAGE_RETRY_DELAY * (2**(attempts - 1)), f"retry_delay_{attempts}")
+
+                    except Exception as e: # Otras excepciones inesperadas durante el POST
+                        logging.error(f"Excepción inesperada en intento {attempts} al guardar mensaje (ID: {message_id}): {e}", exc_info=True)
                         return
-
-            except aiohttp.ClientError as e_http: # Errores de red/conexión de aiohttp
-                logging.warning(f"Excepción de red en intento {attempts}/{SAVE_MESSAGE_MAX_RETRIES} al guardar mensaje (ID: {message_id}): {e_http}")
-                if attempts == SAVE_MESSAGE_MAX_RETRIES:
-                    logging.error(f"Excepción final de red al guardar mensaje (ID: {message_id}) después de {SAVE_MESSAGE_MAX_RETRIES} intentos: {e_http}", exc_info=True)
-                    return
-                await asyncio.sleep(SAVE_MESSAGE_RETRY_DELAY * (2**(attempts - 1)))
-
-            except Exception as e: # Otras excepciones inesperadas durante el POST
-                logging.error(f"Excepción inesperada en intento {attempts} al guardar mensaje (ID: {message_id}): {e}", exc_info=True)
-                return
 
         logging.error(f"Todos los {SAVE_MESSAGE_MAX_RETRIES} intentos para guardar el mensaje (ID: {message_id}) fallaron.")
 

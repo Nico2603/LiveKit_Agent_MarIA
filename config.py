@@ -110,4 +110,37 @@ def create_settings():
 DEFAULT_TASK_TIMEOUT = 30.0  # Segundos para timeout de tareas como TTS
 DEFAULT_DATA_PUBLISH_TIMEOUT = 5.0  # Segundos para timeout al publicar datos por DataChannel
 SAVE_MESSAGE_MAX_RETRIES = 3  # Número máximo de reintentos para guardar mensajes
-SAVE_MESSAGE_RETRY_DELAY = 1.0  # Segundos de delay base para reintentos de guardado de mensajes 
+SAVE_MESSAGE_RETRY_DELAY = 1.0  # Segundos de delay base para reintentos de guardado de mensajes
+
+# Configuraciones de rendimiento y escalabilidad
+PERFORMANCE_CONFIG = {
+    # Pool de conexiones HTTP
+    'max_concurrent_requests': 50,
+    'max_data_channel_concurrent': 10,
+    'connector_limit': 100,
+    'connector_limit_per_host': 30,
+    'http_timeout_total': 30,
+    'http_timeout_connect': 10,
+    'http_timeout_read': 10,
+    
+    # Timeouts específicos para operaciones
+    'data_channel_timeout': 8.0,  # Aumentado de 5.0s
+    'tts_generation_timeout': 15.0,
+    'llm_response_timeout': 30.0,
+    'message_save_timeout': 10.0,
+    
+    # Control de back-pressure
+    'message_queue_max_size': 100,
+    'data_channel_buffer_size': 50,
+    'concurrent_tts_limit': 3,
+    
+    # Reintentos y backoff
+    'max_retries_critical': 5,
+    'max_retries_normal': 3,
+    'retry_base_delay': 1.0,
+    'retry_max_delay': 10.0,
+    
+    # Métricas y monitoring
+    'enable_performance_metrics': True,
+    'metrics_log_interval': 60.0,  # Log métricas cada 60s
+} 

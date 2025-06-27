@@ -2,6 +2,7 @@ import asyncio
 import logging
 import json
 import re
+import time
 from typing import Optional, Dict, Any, Tuple
 
 import aiohttp
@@ -20,11 +21,12 @@ from livekit.plugins import deepgram, openai, silero, cartesia
 from livekit.agents import llm, stt, tts, vad
 
 # Importar módulos locales refactorizados
-from config import create_settings
+from config import create_settings, PERFORMANCE_CONFIG
 from throttler import message_throttler
 from text_utils import generate_welcome_message, convert_numbers_to_text, clean_text_for_tts
 from maria_agent import MariaVoiceAgent
 from plugin_loader import plugin_loader
+from http_session_manager import http_session_manager, TimeoutManager
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -300,8 +302,16 @@ async def job_entrypoint(job: JobContext):
         logging.critical("Faltan uno o más plugins esenciales. Abortando.")
         return
 
-    # Crear sesión HTTP para que MariaVoiceAgent la use para guardar mensajes
-    async with aiohttp.ClientSession() as http_session:
+    # Inicializar el gestor de sesiones HTTP global
+    await http_session_manager.initialize(
+        max_concurrent_requests=PERFORMANCE_CONFIG['max_concurrent_requests'],
+        max_data_channel_concurrent=PERFORMANCE_CONFIG['max_data_channel_concurrent'],
+        connector_limit=PERFORMANCE_CONFIG['connector_limit'],
+        connector_limit_per_host=PERFORMANCE_CONFIG['connector_limit_per_host'],
+        timeout_total=PERFORMANCE_CONFIG['http_timeout_total']
+    )
+    
+    try:
         # Crear AgentSession y pasarle los plugins
         logging.info("Creando AgentSession con los plugins configurados...")
         agent_session = AgentSession(
@@ -340,7 +350,7 @@ async def job_entrypoint(job: JobContext):
 
         # Inicializar el agente principal (MariaVoiceAgent)
         agent = MariaVoiceAgent(
-            http_session=http_session,
+            http_session=http_session_manager.session,
             base_url=settings.api_base_url, # Usar settings #
             target_participant=target_remote_participant,
             chat_session_id=chat_session_id,
@@ -538,6 +548,9 @@ async def job_entrypoint(job: JobContext):
             logging.info("Desconectando el Job de LiveKit...")
             job.shutdown(reason="Dev mode complete") # Cambio a shutdown
             logging.info("Job desconectado.")
+    finally:
+        # Cerrar el gestor HTTP global al final del job
+        await http_session_manager.close()
 
 
 
