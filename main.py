@@ -712,11 +712,13 @@ class MariaVoiceAgent(Agent):
             ai_message_id = str(item.id) if item.id else f"assistant-{uuid.uuid4()}"
             logging.info(f"Assistant message added (ID: {ai_message_id}): '{ai_original_response_text}'")
 
-            processed_text_for_tts, is_closing_message = self._process_closing_message(ai_original_response_text)
-            processed_text_for_tts, video_payload = self._process_video_suggestion(processed_text_for_tts)
+            # Procesar el texto para eliminar videos y detectar despedidas
+            processed_text, video_payload = self._process_video_suggestion(ai_original_response_text)
+            processed_text, is_closing_message = self._process_closing_message(processed_text)
             
-            # Procesar el texto para limpieza TTS
-            processed_text_for_tts = clean_text_for_tts(processed_text_for_tts)
+            # El texto procesado es lo que se mostrará en el chat
+            # Crear una versión limpia para TTS
+            processed_text_for_tts = clean_text_for_tts(processed_text)
             
             # Verificar si es saludo inicial
             is_initial_greeting = self._initial_greeting_text is None
@@ -724,8 +726,8 @@ class MariaVoiceAgent(Agent):
             if is_initial_greeting:
                 logging.info(f"🎯 PRIMER SALUDO DETECTADO - Almacenando texto TTS base")
                 self._initial_greeting_text = processed_text_for_tts
-            
-                                # Log de verificación de consistencia texto-voz
+
+            # Log de verificación de consistencia texto-voz
             logging.info(f"💬 TEXTO EXACTO para mostrar en chat: '{processed_text}'")
             logging.info(f"🔊 TEXTO EXACTO para convertir a voz: '{processed_text_for_tts}'")
             if processed_text != processed_text_for_tts:
@@ -735,14 +737,6 @@ class MariaVoiceAgent(Agent):
             else:
                 logging.info(f"✅ TEXTO IDÉNTICO para chat y voz - {len(processed_text)} caracteres")
 
-            # Crear el payload para enviar al frontend
-            data_payload = {
-                "id": message_id,
-                "text": processed_text,  # <- Este es el texto que se mostrará en el chat
-                "isInitialGreeting": is_initial_greeting,  # Marcar si es saludo inicial
-                "suggestedVideo": suggested_video
-            }
-
             await self._save_message(ai_original_response_text, "assistant", message_id=ai_message_id)
 
             # Almacenar metadatos para los manejadores de eventos TTS
@@ -750,24 +744,20 @@ class MariaVoiceAgent(Agent):
                 "is_closing_message": is_closing_message,
             }
 
-            # Determinar si este es el saludo inicial
-            is_initial_greeting = self._initial_greeting_text is None
-            
             if is_initial_greeting:
-                logging.info(f"📢 Enviando saludo inicial (ID: {ai_message_id}): '{ai_original_response_text}'")
-                self._initial_greeting_text = processed_text_for_tts
+                logging.info(f"📢 Enviando saludo inicial (ID: {ai_message_id}): '{processed_text}'")
             else:
-                logging.info(f"💬 Enviando respuesta del asistente (ID: {ai_message_id}): '{ai_original_response_text[:100]}...'")
+                logging.info(f"💬 Enviando respuesta del asistente (ID: {ai_message_id}): '{processed_text[:100]}...'")
 
-            # SIMPLIFICADO: Solo enviar ai_response_generated para todos los mensajes del asistente
+            # IMPORTANTE: Enviar ai_response_generated ANTES del TTS para que aparezca el texto en el chat
             video_data = video_payload if video_payload else None
-            logging.info(f"💬 Enviando mensaje con video: {video_data}")
+            logging.info(f"💬 Enviando evento ai_response_generated con texto para chat")
             
             await self._send_custom_data("ai_response_generated", {
                 "id": ai_message_id,
-                "text": ai_original_response_text,
+                "text": processed_text,  # El texto procesado que se mostrará en el chat
                 "suggestedVideo": video_data,
-                "isInitialGreeting": is_initial_greeting  # Marcar si es saludo inicial
+                "isInitialGreeting": is_initial_greeting
             })
 
             metadata_for_speak_call = {
@@ -775,7 +765,7 @@ class MariaVoiceAgent(Agent):
                 "is_closing_message": is_closing_message
             }
 
-            # Reproducir TTS para todos los mensajes del asistente
+            # Reproducir TTS después de enviar el evento de texto
             logging.info(f"🔊 Reproduciendo TTS para mensaje (ID: {ai_message_id}): '{processed_text_for_tts[:100]}...'")
             await self._agent_session.speak(processed_text_for_tts, metadata=metadata_for_speak_call)
 
