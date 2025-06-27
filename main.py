@@ -105,16 +105,15 @@ async def _setup_plugins(job: JobContext) -> Tuple[Optional[stt.STT], Optional[l
     try:
         logging.info("🔧 Configurando plugins del agente...")
         
+        # Configuración simplificada de Deepgram STT sin parámetros no soportados
         stt_plugin = deepgram.STT(
             model=settings.deepgram_model, 
             language="es", 
             interim_results=True,
             smart_format=True,
-            punctuate=True,
-            utterance_end_ms=1000,  # Esperar 1 segundo de silencio antes de finalizar utterance
-            vad_events=True,
-            endpointing=300         # Tiempo mínimo antes de endpoint en ms
+            punctuate=True
         )
+        
         llm_plugin = openai.LLM(model=settings.openai_model)
         
         vad_plugin = silero.VAD.load(

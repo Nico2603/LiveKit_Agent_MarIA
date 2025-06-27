@@ -280,13 +280,28 @@ class MariaVoiceAgent(Agent):
                 user_text = message_data.get("text")
                 logging.info(f"📨 Mensaje de usuario recibido: submit_user_text")
                 
-                if user_text and hasattr(self, '_agent_session'):
+                # Verificar que tenemos AgentSession activa antes de procesar
+                if not hasattr(self, '_agent_session') or not self._agent_session:
+                    logging.error("❌ _agent_session no está disponible. No se puede procesar el mensaje.")
+                    return
+                
+                if user_text:
                     logging.info(f"✅ Procesando mensaje de usuario: '{user_text[:50]}...'")
                     await self._send_user_transcript_and_save(user_text)
-                    logging.info(f"🤖 Generando respuesta para: '{user_text[:50]}...'")
-                    self._agent_session.generate_reply(user_input=user_text)
-                elif not hasattr(self, '_agent_session'):
-                    logging.warning("❌ _agent_session no disponible.")
+                    
+                    # Verificar que la sesión del agente está corriendo antes de generar respuesta
+                    try:
+                        logging.info(f"🤖 Generando respuesta para: '{user_text[:50]}...'")
+                        self._agent_session.generate_reply(user_input=user_text)
+                    except RuntimeError as e:
+                        if "AgentSession isn't running" in str(e):
+                            logging.error(f"❌ La AgentSession no está ejecutándose. Error: {e}")
+                            logging.info("🔄 Intentando reiniciar la AgentSession...")
+                            # Aquí podrías implementar lógica de reinicio si es necesario
+                        else:
+                            logging.error(f"❌ Error RuntimeError en generate_reply: {e}")
+                    except Exception as e:
+                        logging.error(f"❌ Error inesperado en generate_reply: {e}", exc_info=True)
                 else:
                     logging.warning(f"❌ Mensaje vacío del participante: {participant_name}")
                 return
