@@ -44,8 +44,11 @@ class AppSettings(BaseSettings):
     cartesia_model: str = Field('sonic-2', env='CARTESIA_MODEL')
     cartesia_voice_id: str = Field('5c5ad5e7-1020-476b-8b91-fdcbe9cc313c', env='CARTESIA_VOICE_ID')
     cartesia_language: str = Field('es', env='CARTESIA_LANGUAGE')
-    cartesia_speed: float = Field(1.0, env='CARTESIA_SPEED')
+    cartesia_speed: float = Field(-0.3, env='CARTESIA_SPEED')  # Más calmada por defecto
     cartesia_emotion: Optional[str] = Field(None, env='CARTESIA_EMOTION')
+    
+    # Configuración de voz adaptativa
+    enable_adaptive_voice: bool = Field(True, env='ENABLE_ADAPTIVE_VOICE')
 
     # Deepgram STT
     deepgram_api_key: str = Field(..., env='DEEPGRAM_API_KEY')
@@ -79,8 +82,9 @@ class DefaultSettings:
         self.cartesia_model = os.getenv('CARTESIA_MODEL', 'sonic-2')
         self.cartesia_voice_id = os.getenv('CARTESIA_VOICE_ID', '5c5ad5e7-1020-476b-8b91-fdcbe9cc313c')
         self.cartesia_language = os.getenv('CARTESIA_LANGUAGE', 'es')
-        self.cartesia_speed = float(os.getenv('CARTESIA_SPEED', '1.0'))
+        self.cartesia_speed = float(os.getenv('CARTESIA_SPEED', '-0.3'))  # Más calmada por defecto
         self.cartesia_emotion = os.getenv('CARTESIA_EMOTION')
+        self.enable_adaptive_voice = os.getenv('ENABLE_ADAPTIVE_VOICE', 'True').lower() == 'true'
         self.deepgram_api_key = os.getenv('DEEPGRAM_API_KEY', '')
         self.deepgram_model = os.getenv('DEEPGRAM_MODEL', 'nova-2')
 

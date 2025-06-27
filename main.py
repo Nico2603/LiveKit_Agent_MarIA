@@ -27,6 +27,7 @@ from text_utils import generate_welcome_message, convert_numbers_to_text, clean_
 from maria_agent import MariaVoiceAgent
 from plugin_loader import plugin_loader
 from http_session_manager import http_session_manager, TimeoutManager
+from adaptive_tts_manager import create_adaptive_tts_manager
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -126,6 +127,10 @@ async def _setup_plugins(job: JobContext) -> Tuple[Optional[stt.STT], Optional[l
             # sample_rate y force_cpu usarán los valores por defecto (16000 y True respectivamente)
         )
 
+        # Crear gestor de TTS adaptativo
+        adaptive_tts_manager = create_adaptive_tts_manager(settings)
+        
+        # TTS base para casos donde no se use la voz adaptativa
         tts_cartesia_plugin = cartesia.TTS(
             api_key=settings.cartesia_api_key,
             model=settings.cartesia_model,
@@ -136,10 +141,11 @@ async def _setup_plugins(job: JobContext) -> Tuple[Optional[stt.STT], Optional[l
         )
 
         logging.info(f"✅ Plugins configurados: STT({settings.deepgram_model}), LLM({settings.openai_model}), VAD(Silero), TTS({settings.cartesia_model})")
-        return stt_plugin, llm_plugin, vad_plugin, tts_cartesia_plugin
+        logging.info(f"🎭 Sistema de voz adaptativa: {'Habilitado' if settings.enable_adaptive_voice else 'Deshabilitado'}")
+        return stt_plugin, llm_plugin, vad_plugin, tts_cartesia_plugin, adaptive_tts_manager
     except Exception as e_plugins:
         logging.error(f"❌ Error crítico configurando plugins: {e_plugins}", exc_info=True)
-        return None, None, None, None
+        return None, None, None, None, None
 
 async def find_target_participant_in_room(room: Room, identity_str: str, timeout: float = 60.0) -> Optional[RemoteParticipant]:
     # Si ya está en la sala:
@@ -296,10 +302,10 @@ async def job_entrypoint(job: JobContext):
     logging.info(f"JobContext - Room ID: {room_sid}, Room Name: {job.room.name}")
     logging.info(f"ChatSessionId: {chat_session_id}, Username: {username if username else '(No especificado)'}") # Asegurar que username no sea None en el log
 
-    # Configurar plugins
-    stt_plugin, llm_plugin, vad_plugin, tts_plugin = await _setup_plugins(job) # job puede ser necesario para contexto de plugins
-    if not all([stt_plugin, llm_plugin, vad_plugin, tts_plugin]):
-        logging.critical("Faltan uno o más plugins esenciales. Abortando.")
+    # Configurar plugins y sistema de voz adaptativa
+    stt_plugin, llm_plugin, vad_plugin, tts_plugin, adaptive_tts_manager = await _setup_plugins(job) # job puede ser necesario para contexto de plugins
+    if not all([stt_plugin, llm_plugin, vad_plugin, tts_plugin, adaptive_tts_manager]):
+        logging.critical("Faltan uno o más plugins esenciales o el gestor TTS adaptativo. Abortando.")
         return
 
     # Inicializar el gestor de sesiones HTTP global
@@ -356,6 +362,7 @@ async def job_entrypoint(job: JobContext):
             chat_session_id=chat_session_id,
             username=username,
             local_agent_identity=local_id,  # AGREGADO: Pasar la identidad del agente local
+            adaptive_tts_manager=adaptive_tts_manager,  # AGREGADO: Pasar el gestor de TTS adaptativo
         )
 
         # AGREGADO: Asignar la sesión al agente para que pueda acceder a los métodos de TTS

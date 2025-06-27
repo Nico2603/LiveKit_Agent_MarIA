@@ -144,6 +144,7 @@ class MariaVoiceAgent(Agent):
                  chat_session_id: Optional[str] = None,
                  username: str = "Usuario",
                  local_agent_identity: Optional[str] = None,
+                 adaptive_tts_manager=None,
                  **kwargs):
         """
         Inicializa el agente de voz Maria.
@@ -176,8 +177,15 @@ class MariaVoiceAgent(Agent):
         self.target_participant = target_participant
         self._agent_session: Optional[AgentSession] = None
         self._room: Optional[Room] = None
+        self.adaptive_tts_manager = adaptive_tts_manager  # Gestor de TTS adaptativo
+        self._last_user_message: str = ""  # Almacenar último mensaje del usuario para análisis emocional
 
         logging.info(f"MariaVoiceAgent inicializada → chatSessionId: {self._chat_session_id}, Usuario: {self._username}, Atendiendo: {self.target_participant.identity}")
+        
+        if self.adaptive_tts_manager:
+            logging.info("🎭 Sistema de voz adaptativa habilitado en MariaVoiceAgent")
+        else:
+            logging.info("⚠️ Sistema de voz adaptativa NO disponible en MariaVoiceAgent")
 
     def set_session(self, session: AgentSession, room: Room):
         """Método para asignar la AgentSession y Room después de su creación."""
@@ -408,6 +416,24 @@ class MariaVoiceAgent(Agent):
     async def _send_user_transcript_and_save(self, user_text: str):
         """Guarda el mensaje del usuario y lo envía al frontend."""
         logging.info(f"Usuario ({self._username}) transcribió/envió: '{user_text}'")
+        
+        # Almacenar el último mensaje del usuario para análisis emocional
+        self._last_user_message = user_text
+        
+        # 🎭 ANÁLISIS DE EMOCIONES: Detectar el estado emocional del usuario
+        if self.adaptive_tts_manager:
+            try:
+                detected_emotions = self.adaptive_tts_manager.emotion_detector.detect_emotions(user_text)
+                emotion_summary = self.adaptive_tts_manager.emotion_detector.get_context_summary(detected_emotions)
+                logging.info(f"🎭 {emotion_summary}")
+                
+                # Preparar el TTS adaptativo para la próxima respuesta
+                voice_profile = self.adaptive_tts_manager.emotion_detector.get_adaptive_voice_profile(detected_emotions)
+                logging.info(f"🎭 Perfil de voz preparado: {voice_profile.voice_description}")
+                
+            except Exception as e:
+                logging.error(f"❌ Error en análisis de emociones: {e}", exc_info=True)
+        
         await self._save_message(user_text, "user")
         await self._send_custom_data("user_transcription_result", {"transcript": user_text})
 
@@ -481,9 +507,40 @@ class MariaVoiceAgent(Agent):
                 "is_closing_message": is_closing_message
             }
 
-            # Reproducir TTS después de enviar el evento de texto
-            logging.info(f"🔊 Reproduciendo TTS para mensaje (ID: {ai_message_id}): '{processed_text_for_tts[:100]}...'")
-            await self._agent_session.speak(processed_text_for_tts, metadata=metadata_for_speak_call)
+            # 🎭 APLICAR VOZ ADAPTATIVA: Usar TTS dinámico basado en emociones detectadas
+            if self.adaptive_tts_manager:
+                try:
+                    # Obtener TTS adaptativo basado en el texto del usuario más reciente
+                    logging.info(f"🎭 Obteniendo TTS adaptativo para respuesta...")
+                    adaptive_tts = self.adaptive_tts_manager.get_adaptive_tts(self._last_user_message)
+                    
+                    # Aplicar el TTS adaptativo al agent session si es posible
+                    if hasattr(self._agent_session, '_tts'):
+                        original_tts = self._agent_session._tts
+                        self._agent_session._tts = adaptive_tts
+                        logging.info(f"🎭 TTS adaptativo aplicado temporalmente para este mensaje")
+                        
+                        # Reproducir con TTS adaptativo
+                        logging.info(f"🔊 Reproduciendo TTS ADAPTATIVO para mensaje (ID: {ai_message_id})")
+                        await self._agent_session.speak(processed_text_for_tts, metadata=metadata_for_speak_call)
+                        
+                        # Restaurar TTS original después del speak
+                        self._agent_session._tts = original_tts
+                        
+                    else:
+                        # Fallback si no se puede modificar el TTS del session
+                        logging.info(f"🔊 Reproduciendo TTS (fallback normal) para mensaje (ID: {ai_message_id})")
+                        await self._agent_session.speak(processed_text_for_tts, metadata=metadata_for_speak_call)
+                        
+                except Exception as e:
+                    logging.error(f"❌ Error aplicando TTS adaptativo: {e}", exc_info=True)
+                    # Fallback a TTS normal
+                    logging.info(f"🔊 Reproduciendo TTS (fallback por error) para mensaje (ID: {ai_message_id})")
+                    await self._agent_session.speak(processed_text_for_tts, metadata=metadata_for_speak_call)
+            else:
+                # TTS normal cuando no hay sistema adaptativo
+                logging.info(f"🔊 Reproduciendo TTS para mensaje (ID: {ai_message_id}): '{processed_text_for_tts[:100]}...'")
+                await self._agent_session.speak(processed_text_for_tts, metadata=metadata_for_speak_call)
 
     async def on_tts_playback_started(self, event: Any):
         """Callback cuando el TTS comienza a reproducirse."""
@@ -565,10 +622,43 @@ class MariaVoiceAgent(Agent):
             await self._send_custom_data("ai_response_generated", saludo_payload)
             logging.info("✅ Saludo enviado al frontend exitosamente")
             
-            # Generar TTS para que María hable
+            # 🎭 Generar TTS con voz adaptativa para saludo inicial (usar perfil calmado)
             logging.info(f"🔊 Iniciando TTS para que María pronuncie el saludo")
-            await self._agent_session.say(immediate_greeting_clean, allow_interruptions=True)
-            logging.info("✅ María está hablando - TTS iniciado exitosamente")
+            
+            if self.adaptive_tts_manager:
+                try:
+                    # Para el saludo inicial, usar un perfil neutro y calmado
+                    from emotion_detector import VoiceProfile
+                    calm_profile = VoiceProfile(
+                        speed=-0.4,  # Más pausada para el saludo inicial
+                        emotion=["positivity:low"],  # Ligeramente positiva y acogedora
+                        voice_description="Voz cálida y acogedora para saludo inicial"
+                    )
+                    
+                    logging.info(f"🎭 Aplicando perfil especial para saludo inicial: {calm_profile.voice_description}")
+                    adaptive_tts = self.adaptive_tts_manager._create_adaptive_tts(calm_profile)
+                    
+                    # Aplicar TTS adaptativo temporalmente
+                    if hasattr(self._agent_session, '_tts'):
+                        original_tts = self._agent_session._tts
+                        self._agent_session._tts = adaptive_tts
+                        
+                        await self._agent_session.say(immediate_greeting_clean, allow_interruptions=True)
+                        
+                        # Restaurar TTS original
+                        self._agent_session._tts = original_tts
+                        logging.info("✅ María está hablando con voz adaptativa - TTS iniciado exitosamente")
+                    else:
+                        await self._agent_session.say(immediate_greeting_clean, allow_interruptions=True)
+                        logging.info("✅ María está hablando (fallback) - TTS iniciado exitosamente")
+                        
+                except Exception as e:
+                    logging.error(f"❌ Error aplicando TTS adaptativo en saludo: {e}", exc_info=True)
+                    await self._agent_session.say(immediate_greeting_clean, allow_interruptions=True)
+                    logging.info("✅ María está hablando (fallback por error) - TTS iniciado exitosamente")
+            else:
+                await self._agent_session.say(immediate_greeting_clean, allow_interruptions=True)
+                logging.info("✅ María está hablando - TTS iniciado exitosamente")
             
         except Exception as e:
             logging.error(f"❌ Error enviando saludo inicial: {e}", exc_info=True)

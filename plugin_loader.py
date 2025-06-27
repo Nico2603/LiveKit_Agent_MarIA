@@ -77,7 +77,7 @@ class PluginRegistry:
                 'model': 'sonic-2',
                 'voice': '5c5ad5e7-1020-476b-8b91-fdcbe9cc313c',
                 'language': 'es',
-                'speed': 1.0,
+                'speed': -0.3,  # Más calmada por defecto
                 'emotion': None
             }
         }
