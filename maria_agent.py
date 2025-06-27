@@ -8,6 +8,7 @@ import json
 import uuid
 import time
 import logging
+import re
 from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
 
@@ -40,6 +41,121 @@ except Exception as e:
 
 class MessageProcessor:
     """Procesador de mensajes para manejar diferentes tipos de contenido."""
+    
+    @staticmethod
+    def process_rich_content(text: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """
+        Procesa el texto para extraer todo el contenido enriquecido (imágenes, enlaces, botones, tarjetas).
+        
+        Soporta las siguientes etiquetas:
+        - [IMAGEN: título, url, alt?, descripción?]
+        - [ENLACE: título, url, descripción?, tipo?]
+        - [BOTON: título, acción, estilo?, icono?]
+        - [TARJETA: título, contenido, tipo?, items...]
+        - [SUGERIR_VIDEO: título, url] (compatibilidad)
+
+        Args:
+            text: El texto del mensaje.
+
+        Returns:
+            Una tupla con el texto procesado y un diccionario con el contenido enriquecido.
+        """
+        rich_content = {}
+        processed_text = text
+        
+        # Procesar imágenes [IMAGEN: título, url, alt, descripción]
+        images = []
+        image_pattern = r'\[IMAGEN:\s*([^,\]]+),\s*([^,\]]+)(?:,\s*([^,\]]+))?(?:,\s*([^\]]+))?\]'
+        for match in re.finditer(image_pattern, processed_text):
+            title = match.group(1).strip()
+            url = match.group(2).strip()
+            alt = match.group(3).strip() if match.group(3) else title
+            caption = match.group(4).strip() if match.group(4) else None
+            
+            if url.startswith('http'):
+                images.append({
+                    "title": title,
+                    "url": url,
+                    "alt": alt,
+                    "caption": caption
+                })
+                processed_text = processed_text.replace(match.group(0), '').strip()
+                logging.info(f"📸 Imagen detectada: {title} -> {url}")
+        
+        if images:
+            rich_content["images"] = images
+
+        # Procesar enlaces [ENLACE: título, url, descripción, tipo]
+        links = []
+        link_pattern = r'\[ENLACE:\s*([^,\]]+),\s*([^,\]]+)(?:,\s*([^,\]]+))?(?:,\s*([^\]]+))?\]'
+        for match in re.finditer(link_pattern, processed_text):
+            title = match.group(1).strip()
+            url = match.group(2).strip()
+            description = match.group(3).strip() if match.group(3) else None
+            link_type = match.group(4).strip() if match.group(4) else 'external'
+            
+            if url.startswith('http'):
+                links.append({
+                    "title": title,
+                    "url": url,
+                    "description": description,
+                    "type": link_type
+                })
+                processed_text = processed_text.replace(match.group(0), '').strip()
+                logging.info(f"🔗 Enlace detectado: {title} -> {url} (tipo: {link_type})")
+        
+        if links:
+            rich_content["links"] = links
+
+        # Procesar botones [BOTON: título, acción, estilo, icono]
+        buttons = []
+        button_pattern = r'\[BOTON:\s*([^,\]]+),\s*([^,\]]+)(?:,\s*([^,\]]+))?(?:,\s*([^\]]+))?\]'
+        for match in re.finditer(button_pattern, processed_text):
+            title = match.group(1).strip()
+            action = match.group(2).strip()
+            style = match.group(3).strip() if match.group(3) else 'primary'
+            icon = match.group(4).strip() if match.group(4) else None
+            
+            buttons.append({
+                "title": title,
+                "action": action,
+                "style": style,
+                "icon": icon
+            })
+            processed_text = processed_text.replace(match.group(0), '').strip()
+            logging.info(f"🔘 Botón detectado: {title} -> {action} (estilo: {style})")
+        
+        if buttons:
+            rich_content["buttons"] = buttons
+
+        # Procesar tarjetas [TARJETA: título, contenido, tipo, item1|item2|item3]
+        cards = []
+        card_pattern = r'\[TARJETA:\s*([^,\]]+),\s*([^,\]]+)(?:,\s*([^,\]]+))?(?:,\s*([^\]]+))?\]'
+        for match in re.finditer(card_pattern, processed_text):
+            title = match.group(1).strip()
+            content = match.group(2).strip()
+            card_type = match.group(3).strip() if match.group(3) else 'info'
+            items_str = match.group(4).strip() if match.group(4) else None
+            
+            card_data = {
+                "title": title,
+                "content": content,
+                "type": card_type
+            }
+            
+            if items_str:
+                items = [item.strip() for item in items_str.split('|') if item.strip()]
+                if items:
+                    card_data["items"] = items
+            
+            cards.append(card_data)
+            processed_text = processed_text.replace(match.group(0), '').strip()
+            logging.info(f"🃏 Tarjeta detectada: {title} (tipo: {card_type})")
+        
+        if cards:
+            rich_content["cards"] = cards
+
+        return processed_text, rich_content if rich_content else None
     
     @staticmethod
     def process_closing_message(text: str, username: str) -> Tuple[str, bool]:
@@ -454,8 +570,9 @@ class MariaVoiceAgent(Agent):
             ai_message_id = str(item.id) if item.id else f"assistant-{uuid.uuid4()}"
             logging.info(f"Assistant message added (ID: {ai_message_id}): '{ai_original_response_text}'")
 
-            # Procesar el texto para eliminar videos y detectar despedidas
-            processed_text, video_payload = MessageProcessor.process_video_suggestion(ai_original_response_text)
+            # Procesar el texto para extraer contenido enriquecido y detectar despedidas
+            processed_text, rich_content = MessageProcessor.process_rich_content(ai_original_response_text)
+            processed_text, video_payload = MessageProcessor.process_video_suggestion(processed_text)  # Para compatibilidad
             processed_text, is_closing_message = MessageProcessor.process_closing_message(processed_text, self._username)
             
             # El texto procesado es lo que se mostrará en el chat
@@ -493,14 +610,29 @@ class MariaVoiceAgent(Agent):
 
             # IMPORTANTE: Enviar ai_response_generated ANTES del TTS para que aparezca el texto en el chat
             video_data = video_payload if video_payload else None
-            logging.info(f"💬 Enviando evento ai_response_generated con texto para chat")
             
-            await self._send_custom_data("ai_response_generated", {
+            # Combinar rich_content con video para compatibilidad
+            combined_rich_content = rich_content.copy() if rich_content else {}
+            if video_data and "suggestedVideo" not in combined_rich_content:
+                combined_rich_content["suggestedVideo"] = video_data
+            
+            payload_data = {
                 "id": ai_message_id,
                 "text": processed_text,  # El texto procesado que se mostrará en el chat
-                "suggestedVideo": video_data,
                 "isInitialGreeting": is_initial_greeting
-            })
+            }
+            
+            # Agregar contenido enriquecido si existe
+            if combined_rich_content:
+                payload_data["richContent"] = combined_rich_content
+                logging.info(f"🎨 Enviando respuesta enriquecida: {list(combined_rich_content.keys())}")
+            
+            # Mantener compatibilidad con suggestedVideo
+            if video_data:
+                payload_data["suggestedVideo"] = video_data
+            
+            logging.info(f"💬 Enviando evento ai_response_generated con texto para chat")
+            await self._send_custom_data("ai_response_generated", payload_data)
 
             metadata_for_speak_call = {
                 "messageId": ai_message_id,
