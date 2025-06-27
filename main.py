@@ -1,196 +1,27 @@
 import asyncio
 import logging
-import os
-import json # Para parsear metadata
-import uuid # Para generar IDs únicos para mensajes de IA
-from typing import Optional, List, Dict, Any, Tuple
-from pathlib import Path # Para leer el archivo de prompt
-import time
-import re
+import json
+from typing import Optional, Dict, Any
 
-# CRÍTICO: Cargar variables de entorno ANTES que cualquier otra importación
-from dotenv import load_dotenv
-load_dotenv()
-
-# Asegurar que las variables críticas estén disponibles para el SDK de LiveKit
-import os
-if not os.getenv("LIVEKIT_API_KEY"):
-    # Cargar explícitamente desde dotenv si no están en el entorno
-    from dotenv import dotenv_values
-    env_vars = dotenv_values('.env')
-    for key, value in env_vars.items():
-        if value is not None:
-            os.environ[key] = value
-
-import aiohttp # Para llamadas HTTP asíncronas
+import aiohttp
 
 from livekit.agents import (
     JobContext,
     WorkerOptions,
-    cli, # Importar cli como módulo desde livekit.agents
-    stt,
-    llm, # Mantener esta importación
-    tts,
-    vad,
+    cli,
     AgentSession,
-    Agent,
     WorkerType,
     RoomOutputOptions,
     RoomInputOptions,
 )
-from livekit.agents.llm import ChatMessage # Importar ChatMessage
 from livekit.rtc import RemoteParticipant, Room
-# Importar plugins de LiveKit
-from livekit.plugins import deepgram, openai, silero, cartesia
 
-# TABUS removido - ahora usando avatar CSS en frontend
-
-# Contenido de config.py movido aquí
-from typing import Optional
-from pydantic_settings import BaseSettings
-from pydantic import Field, Extra, field_validator
-
-class AppSettings(BaseSettings):
-    """
-    Configuración de la aplicación cargada desde variables de entorno.
-    """
-    # LiveKit
-    livekit_url: str = Field(..., env='LIVEKIT_URL')
-    livekit_api_key: str = Field(..., env='LIVEKIT_API_KEY')
-    livekit_api_secret: str = Field(..., env='LIVEKIT_API_SECRET')
-    livekit_agent_port: int = Field(8000, env='LIVEKIT_AGENT_PORT')
-
-    # Backend API
-    api_base_url: str = Field('https://mar-ia-7s6y.onrender.com', env='API_BASE_URL')
-
-    # OpenAI
-    openai_api_key: str = Field(..., env='OPENAI_API_KEY')
-    openai_model: str = Field('gpt-4o-mini', env='OPENAI_MODEL')
-
-    # Cartesia TTS
-    cartesia_api_key: str = Field(..., env='CARTESIA_API_KEY')
-    cartesia_model: str = Field('sonic-2', env='CARTESIA_MODEL')
-    cartesia_voice_id: str = Field('5c5ad5e7-1020-476b-8b91-fdcbe9cc313c', env='CARTESIA_VOICE_ID')
-    cartesia_language: str = Field('es', env='CARTESIA_LANGUAGE')
-    cartesia_speed: float = Field(1.0, env='CARTESIA_SPEED')
-    cartesia_emotion: Optional[str] = Field(None, env='CARTESIA_EMOTION')
-
-    # Tavus Avatar - REMOVIDO (ahora usando avatar CSS)
-
-    # Deepgram STT
-    deepgram_api_key: str = Field(..., env='DEEPGRAM_API_KEY')
-    deepgram_model: str = Field('nova-2', env='DEEPGRAM_MODEL')
-
-    @field_validator('livekit_agent_port', mode='before')
-    def _clean_port(cls, v):
-        # Elimina cualquier comentario tras '#' y espacios
-        if isinstance(v, str):
-            v = v.split('#', 1)[0].strip()
-        return v
-
-    class Config:
-        env_file = '.env'
-        case_sensitive = False
-        extra = 'ignore'
-
-# Instancia global de configuración con manejo de errores
-try:
-    settings = AppSettings()
-    logging.info("✅ Configuración cargada exitosamente")
-    logging.info(f"🔗 LiveKit URL: {settings.livekit_url}")
-    logging.info(f"🌐 API Base URL: {settings.api_base_url}")
-    logging.info(f"🤖 OpenAI Model: {settings.openai_model}")
-    logging.info(f"🎵 Cartesia Voice ID: {settings.cartesia_voice_id}")
-    logging.info("🎭 Usando avatar CSS en frontend")
-except Exception as e:
-    logging.error(f"❌ Error cargando configuración: {e}")
-    # Crear configuración por defecto para desarrollo
-    import os
-    class DefaultSettings:
-        def __init__(self):
-            self.livekit_url = os.getenv('LIVEKIT_URL', 'wss://localhost:7880')
-            self.livekit_api_key = os.getenv('LIVEKIT_API_KEY', '')
-            self.livekit_api_secret = os.getenv('LIVEKIT_API_SECRET', '')
-            self.livekit_agent_port = int(os.getenv('LIVEKIT_AGENT_PORT', '7880'))
-            self.api_base_url = os.getenv('API_BASE_URL', 'https://mar-ia-7s6y.onrender.com')
-            self.openai_api_key = os.getenv('OPENAI_API_KEY', '')
-            self.openai_model = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
-            self.cartesia_api_key = os.getenv('CARTESIA_API_KEY', '')
-            self.cartesia_model = os.getenv('CARTESIA_MODEL', 'sonic-2')
-            self.cartesia_voice_id = os.getenv('CARTESIA_VOICE_ID', '5c5ad5e7-1020-476b-8b91-fdcbe9cc313c')
-            self.cartesia_language = os.getenv('CARTESIA_LANGUAGE', 'es')
-            self.cartesia_speed = float(os.getenv('CARTESIA_SPEED', '1.0'))
-            self.cartesia_emotion = os.getenv('CARTESIA_EMOTION')
-            # Tavus removido - usando avatar CSS
-            self.deepgram_api_key = os.getenv('DEEPGRAM_API_KEY', '')
-            self.deepgram_model = os.getenv('DEEPGRAM_MODEL', 'nova-2')
-    
-    settings = DefaultSettings()
-    logging.warning("⚠️ Usando configuración por defecto debido a errores de validación")
-
-class MessageThrottler:
-    """Clase para reducir el spam de logs de eventos repetitivos."""
-    def __init__(self):
-        self.last_log_times = {}
-        self.event_configs = {
-            # Configuraciones específicas para diferentes tipos de eventos
-            'system.replica_present': {'throttle_seconds': 30, 'log_every_n': 20},  # Log cada 30s o cada 20 intentos
-            'system.heartbeat': {'throttle_seconds': 60, 'log_every_n': 100},  # Log cada 60s o cada 100 heartbeats
-            'datachannel_success': {'throttle_seconds': 10, 'log_every_n': 50},  # Menos logs de éxito de DataChannel
-            'tts_events': {'throttle_seconds': 2, 'log_every_n': 1},  # TTS events normales
-            'conversation_events': {'throttle_seconds': 0, 'log_every_n': 1},  # Eventos importantes siempre
-            'default': {'throttle_seconds': 5, 'log_every_n': 10}  # Default para otros eventos
-        }
-        self.event_counters = {}
-    
-    def should_log(self, event_key, event_type='default', attempt_number=None):
-        """
-        Determina si un evento debe loguearse basado en tiempo y frecuencia.
-        
-        Args:
-            event_key: Clave única del evento
-            event_type: Tipo de evento para configuración específica
-            attempt_number: Número de intento para eventos numerados
-        """
-        now = time.time()
-        config = self.event_configs.get(event_type, self.event_configs['default'])
-        
-        # Inicializar counters si no existen
-        if event_key not in self.event_counters:
-            self.event_counters[event_key] = 0
-        
-        # Incrementar contador
-        self.event_counters[event_key] += 1
-        
-        # Verificar si ha pasado suficiente tiempo
-        last_time = self.last_log_times.get(event_key, 0)
-        time_passed = now - last_time >= config['throttle_seconds']
-        
-        # Verificar si es cada N intentos
-        count_reached = self.event_counters[event_key] % config['log_every_n'] == 0
-        
-        # Para eventos numerados, siempre loguear el primer intento
-        if attempt_number == 1:
-            should_log = True
-        else:
-            should_log = time_passed or count_reached
-        
-        if should_log:
-            self.last_log_times[event_key] = now
-            return True
-        return False
-
-    def get_stats(self, event_key):
-        """Obtiene estadísticas de un evento específico."""
-        return {
-            'total_events': self.event_counters.get(event_key, 0),
-            'last_log_time': self.last_log_times.get(event_key, 0)
-        }
-
-# Instancia global del throttler
-message_throttler = MessageThrottler()
-
-# Variables de entorno ya cargadas al inicio del script
+# Importar módulos locales refactorizados
+from config import create_settings
+from throttler import message_throttler
+from text_utils import generate_welcome_message
+from maria_agent import MariaVoiceAgent
+from plugin_loader import plugin_loader
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -207,608 +38,10 @@ logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 logging.getLogger('urllib3').setLevel(logging.CRITICAL)
 
-# Constantes
-DEFAULT_TASK_TIMEOUT = 30.0  # Segundos para timeout de tareas como TTS
-DEFAULT_DATA_PUBLISH_TIMEOUT = 5.0  # Segundos para timeout al publicar datos por DataChannel
-SAVE_MESSAGE_MAX_RETRIES = 3 # Número máximo de reintentos para guardar mensajes
-SAVE_MESSAGE_RETRY_DELAY = 1.0 # Segundos de delay base para reintentos de guardado de mensajes
+# Cargar configuración usando el factory method
+settings = create_settings()
 
-# Cargar la plantilla del prompt del sistema desde el archivo
-try:
-    PROMPT_FILE_PATH = Path(__file__).parent / "maria_system_prompt.txt"
-    MARIA_SYSTEM_PROMPT_TEMPLATE = PROMPT_FILE_PATH.read_text(encoding="utf-8")
-    # Validar contenido del prompt template
-    if "{username}" not in MARIA_SYSTEM_PROMPT_TEMPLATE:
-        logging.warning(
-            f"El archivo de prompt {PROMPT_FILE_PATH} no contiene la llave {{username}}. "
-            "Esto podría causar errores en la personalización del prompt."
-        )
-except FileNotFoundError:
-    logging.error(f"Error: No se encontró el archivo de prompt en {PROMPT_FILE_PATH}. Usando un prompt de respaldo genérico.")
-    MARIA_SYSTEM_PROMPT_TEMPLATE = "Eres una asistente virtual llamada María. Tu objetivo es ayudar con la ansiedad. Saluda al usuario {username}."
-except Exception as e:
-    logging.error(f"Error al cargar o validar el archivo de prompt {PROMPT_FILE_PATH}: {e}. Usando un prompt de respaldo genérico.", exc_info=True)
-    MARIA_SYSTEM_PROMPT_TEMPLATE = "Eres una asistente virtual llamada María. Tu objetivo es ayudar con la ansiedad. Saluda al usuario {username}."
-
-class MariaVoiceAgent(Agent):
-    def __init__(self,
-                 http_session: aiohttp.ClientSession,
-                 base_url: str,
-                 target_participant: RemoteParticipant, # Útil para logging o referencia interna
-                 chat_session_id: Optional[str] = None,
-                 username: str = "Usuario",
-                 local_agent_identity: Optional[str] = None,  # AGREGADO: Para identificar al agente local
-                 # Los plugins STT, LLM, TTS, VAD ya no se pasan aquí
-                 **kwargs):
-        """
-        Inicializa el agente de voz Maria.
-
-        Args:
-            http_session: Sesión aiohttp para realizar solicitudes HTTP.
-            base_url: URL base para las API del backend.
-            target_participant: El participante remoto al que este agente está atendiendo.
-            chat_session_id: ID de la sesión de chat actual.
-            username: Nombre del usuario.
-            local_agent_identity: Identidad del agente local para filtrar mensajes.
-            **kwargs: Argumentos adicionales para la clase base Agent.
-        """
-
-        system_prompt = MARIA_SYSTEM_PROMPT_TEMPLATE.format(
-            username=username if username and username != "Usuario" else "Usuario",
-            latest_summary="No hay información previa relevante."
-        ).strip()
-
-        # Los plugins se configuran en AgentSession, por lo que no se pasan a super()
-        super().__init__(instructions=system_prompt,
-                         # stt, llm, tts, vad ya no se pasan aquí
-                         **kwargs)
-
-        self._http_session = http_session
-        self._base_url = base_url
-        self._chat_session_id = chat_session_id
-        self._username = username
-        self._local_agent_identity = local_agent_identity  # AGREGADO: Almacenar identidad del agente local
-        self._ai_message_meta: Dict[str, Dict[str, Any]] = {}
-        self._initial_greeting_text: Optional[str] = None
-        self.target_participant = target_participant
-        self._agent_session: Optional[AgentSession] = None  # CORREGIDO: Cambio de nombre para evitar conflicto
-        self._room: Optional[Room] = None  # AGREGADO: Referencia al room
-
-        logging.info(f"MariaVoiceAgent inicializada → chatSessionId: {self._chat_session_id}, Usuario: {self._username}, Atendiendo: {self.target_participant.identity}")
-
-    def set_session(self, session: AgentSession, room: Room):
-        """AGREGADO: Método para asignar la AgentSession y Room después de su creación."""
-        self._agent_session = session  # CORREGIDO: Usar _agent_session
-        self._room = room  # AGREGADO: Almacenar referencia al room
-        logging.info("✅ AgentSession y Room asignados, callbacks conectados")
-
-        # Conectar callbacks del agente a la sesión
-        # CORREGIDO: Wrapper síncrono para callback async
-        def on_conversation_item_added_wrapper(item):
-            asyncio.create_task(self._on_conversation_item_added(item))
-        
-        def on_tts_playback_started_wrapper(event):
-            asyncio.create_task(self.on_tts_playback_started(event))
-        
-        def on_tts_playback_finished_wrapper(event):
-            asyncio.create_task(self.on_tts_playback_finished(event))
-
-        session.on("llm_conversation_item_added", on_conversation_item_added_wrapper)
-        session.on("tts_playback_started", on_tts_playback_started_wrapper)
-        session.on("tts_playback_finished", on_tts_playback_finished_wrapper)
-
-    def register_data_received_event(self):
-        """Registra el evento data_received después de que la sesión esté completamente inicializada."""
-        if self._room and hasattr(self, '_agent_session') and self._agent_session:
-            def on_data_received_wrapper(data_packet):
-                # El DataPacket contiene: data, kind, participant, topic
-                asyncio.create_task(self._handle_frontend_data(data_packet.data, data_packet.participant))
-            
-            self._room.on("data_received", on_data_received_wrapper)
-            logging.info("✅ Evento data_received registrado exitosamente en el room")
-        else:
-            logging.warning("❌ No se pudo registrar evento data_received: room o agent_session no disponible")
-
-    async def _send_custom_data(self, data_type: str, data_payload: Dict[str, Any]):
-        """
-        Envía datos personalizados al frontend a través de un DataChannel.
-        Adapta el formato según si se está usando Tavus o no.
-
-        Args:
-            data_type: El tipo de mensaje a enviar (ej. "tts_started", "user_transcription_result").
-            data_payload: El contenido del mensaje.
-        """
-        try:
-            # Log más detallado para debug
-            logging.info(f"🔧 _send_custom_data iniciado: type='{data_type}', payload={data_payload}")
-            
-            # Verificar estado de la room
-            logging.info(f"🔍 Estado self._room: {self._room is not None}")
-            logging.info(f"🔍 Estado self._room.local_participant: {self._room.local_participant is not None if self._room else 'N/A'}")
-            
-            if self._room and self._room.local_participant:
-                 
-                logging.info("✅ Room y local_participant están disponibles")
-                
-                # Enviar en formato directo (Tavus removido)
-                message_data = {
-                    "type": data_type,
-                    **data_payload  # Expandir directamente el payload
-                }
-                logging.info(f"📦 Mensaje preparado para envío: {message_data}")
-                
-                # Serializar a JSON
-                json_message = json.dumps(message_data)
-                logging.info(f"📄 JSON serializado (primeros 200 chars): {json_message[:200]}")
-                
-                logging.info(f"🚀 Enviando via DataChannel (timeout: {DEFAULT_DATA_PUBLISH_TIMEOUT}s)...")
-                await asyncio.wait_for(
-                    self._room.local_participant.publish_data(json_message),
-                    timeout=DEFAULT_DATA_PUBLISH_TIMEOUT
-                )
-                
-                logging.info(f"✅ Mensaje '{data_type}' enviado exitosamente via DataChannel")
-            else:
-                 logging.warning("No se pudo enviar custom data: room no está disponible.")
-        except asyncio.TimeoutError:
-            logging.error(f"❌ TIMEOUT al enviar DataChannel: type={data_type}, timeout={DEFAULT_DATA_PUBLISH_TIMEOUT}s")
-        except Exception as e:
-            logging.error(f"❌ EXCEPCIÓN al enviar DataChannel: {e}", exc_info=True)
-
-    # Método _convert_to_tavus_format removido - ya no necesario
-
-    async def _handle_frontend_data(self, payload: bytes, participant: 'livekit.RemoteParticipant'):
-        """Maneja los DataChannels enviados desde el frontend (formato directo, sin Tavus)."""
-        # CORREGIDO: Usar la identidad del agente local almacenada para ignorar mensajes propios
-        if participant and self._local_agent_identity and participant.identity == self._local_agent_identity:
-             if message_throttler.should_log(f"ignore_own_message_{participant.identity}", 'default'):
-                 logging.debug(f"Ignorando mensaje del propio agente: {participant.identity}")
-             return
-
-        try:
-            data_str = payload.decode('utf-8')
-            message_data = json.loads(data_str)
-            
-            # Solo log detallado para mensajes importantes
-            participant_name = participant.identity if participant else 'N/A'
-            if message_throttler.should_log(f"datachannel_received_{participant_name}", 'default'):
-                logging.debug(f"DataChannel recibido: Participante='{participant_name}', Payload='{data_str[:100]}...'")
-
-            # Extraer tipo de mensaje
-            message_type = message_data.get("type")
-
-            # Manejar mensajes de texto del usuario
-            if message_type == "submit_user_text":
-                user_text = message_data.get("text")
-                logging.info(f"📨 Mensaje de usuario recibido: submit_user_text")
-                
-                if user_text and hasattr(self, '_agent_session'):
-                    logging.info(f"✅ Procesando mensaje de usuario: '{user_text[:50]}...'")
-                    await self._send_user_transcript_and_save(user_text)
-                    logging.info(f"🤖 Generando respuesta para: '{user_text[:50]}...'")
-                    self._agent_session.generate_reply(user_input=user_text)
-                elif not hasattr(self, '_agent_session'):
-                    logging.warning("❌ _agent_session no disponible.")
-                else:
-                    logging.warning(f"❌ Mensaje vacío del participante: {participant_name}")
-                return
-
-            # Eventos directos con throttling
-            if message_type:
-                if message_throttler.should_log(f'direct_event_{message_type}', 'default'):
-                    logging.info(f"📨 Evento directo: tipo='{message_type}'")
-                return
-
-            # Mensajes desconocidos con throttling
-            if message_throttler.should_log('unknown_message_format', 'default'):
-                logging.info(f"ℹ️ Mensaje formato desconocido recibido")
-
-        except json.JSONDecodeError:
-            if message_throttler.should_log('json_decode_error', 'default'):
-                logging.warning(f"❌ Error decodificando JSON del DataChannel: {payload.decode('utf-8', errors='ignore')[:100]}...")
-        except Exception as e:
-            logging.error(f"❌ Error procesando DataChannel: {e}", exc_info=True)
-
-    async def _save_message(self, content: str, sender: str, message_id: Optional[str] = None, is_sensitive: bool = False):
-        """
-        Guarda un mensaje en el backend mediante una solicitud HTTP POST.
-        Implementa una lógica de reintentos con backoff exponencial para errores de servidor.
-
-        Args:
-            content: El contenido del mensaje.
-            sender: El remitente del mensaje ("user" o "assistant").
-            message_id: ID único del mensaje. Si es None, se generará uno.
-            is_sensitive: Si el contenido del mensaje es sensible y no debe loguearse completo.
-        """
-        if not self._chat_session_id:
-            logging.warning("chat_session_id no está disponible, no se puede guardar el mensaje.")
-            return
-
-        if not message_id:
-            message_id = f"{sender}-{uuid.uuid4()}"
-
-        payload = {
-            "id": message_id,
-            "chatSessionId": self._chat_session_id,
-            "sender": sender,
-            "content": content,
-        }
-
-        log_content_display = "[CONTENIDO SENSIBLE OMITIDO]" if is_sensitive else content[:100] + ("..." if len(content) > 100 else "")
-        logging.info(f"Intentando guardar mensaje: ID={message_id}, chatSessionId={self._chat_session_id}, sender={sender}, content='{log_content_display}'")
-
-        attempts = 0
-        while attempts < SAVE_MESSAGE_MAX_RETRIES:
-            attempts += 1
-            try:
-                async with self._http_session.post(f"{self._base_url}/api/messages", json=payload) as resp:
-                    if resp.status == 201:
-                        logging.info(f"Mensaje (ID: {message_id}) guardado exitosamente en intento {attempts}.")
-                        return
-
-                    error_text = await resp.text()
-                    if resp.status >= 500: # Errores de servidor, reintentables
-                        logging.warning(f"Intento {attempts}/{SAVE_MESSAGE_MAX_RETRIES} fallido al guardar mensaje (ID: {message_id}). Status: {resp.status}. Error: {error_text}")
-                        if attempts == SAVE_MESSAGE_MAX_RETRIES:
-                            logging.error(f"Error final del servidor ({resp.status}) al guardar mensaje (ID: {message_id}) después de {SAVE_MESSAGE_MAX_RETRIES} intentos: {error_text}")
-                            return
-                        await asyncio.sleep(SAVE_MESSAGE_RETRY_DELAY * (2**(attempts - 1)))
-                    else: # Errores de cliente (4xx) u otros no reintentables por código de estado
-                        logging.error(f"Error no reintentable del cliente ({resp.status}) al guardar mensaje (ID: {message_id}): {error_text}")
-                        return
-
-            except aiohttp.ClientError as e_http: # Errores de red/conexión de aiohttp
-                logging.warning(f"Excepción de red en intento {attempts}/{SAVE_MESSAGE_MAX_RETRIES} al guardar mensaje (ID: {message_id}): {e_http}")
-                if attempts == SAVE_MESSAGE_MAX_RETRIES:
-                    logging.error(f"Excepción final de red al guardar mensaje (ID: {message_id}) después de {SAVE_MESSAGE_MAX_RETRIES} intentos: {e_http}", exc_info=True)
-                    return
-                await asyncio.sleep(SAVE_MESSAGE_RETRY_DELAY * (2**(attempts - 1)))
-
-            except Exception as e: # Otras excepciones inesperadas durante el POST
-                logging.error(f"Excepción inesperada en intento {attempts} al guardar mensaje (ID: {message_id}): {e}", exc_info=True)
-                return
-
-        logging.error(f"Todos los {SAVE_MESSAGE_MAX_RETRIES} intentos para guardar el mensaje (ID: {message_id}) fallaron.")
-
-    async def _send_user_transcript_and_save(self, user_text: str):
-        """Guarda el mensaje del usuario y lo envía al frontend."""
-        logging.info(f"Usuario ({self._username}) transcribió/envió: '{user_text}'")
-        await self._save_message(user_text, "user")
-        await self._send_custom_data("user_transcription_result", {"transcript": user_text})
-
-    def _process_closing_message(self, text: str) -> Tuple[str, bool]:
-        """
-        Procesa el texto de un mensaje para detectar y limpiar una señal de cierre de sesión.
-        Busca la etiqueta [CIERRE_DE_SESION] en el texto, la remueve, y devuelve
-        información sobre si se detectó esta señal.
-
-        Args:
-            text: El texto del mensaje.
-
-        Returns:
-            Una tupla conteniendo el texto procesado (sin la etiqueta de cierre)
-            y un booleano indicando si se detectó la señal de cierre.
-        """
-        is_closing_message = False
-        
-        # Detectar automáticamente despedidas naturales y añadir el tag internamente
-        auto_detected_closing = self._detect_natural_closing_message(text)
-        
-        # Si ya contiene la etiqueta manual o se detectó automáticamente
-        if "[CIERRE_DE_SESION]" in text or auto_detected_closing:
-            is_closing_message = True
-            
-            if "[CIERRE_DE_SESION]" in text:
-                logging.info(f"Se detectó señal manual [CIERRE_DE_SESION] en el texto: '{text}'")
-                # Remover completamente la etiqueta y limpiar espacios
-                text = text.replace("[CIERRE_DE_SESION]", "").strip()
-            else:
-                logging.info(f"Se detectó despedida automática en el texto: '{text}'")
-            
-            # Asegurar que hay texto válido para el TTS
-            if not text or len(text.strip()) == 0:
-                # Si el texto quedó vacío, usar un mensaje de despedida genérico
-                text = f"Hasta pronto, {self._username}."
-                logging.info(f"Texto vacío después de procesar cierre, usando despedida genérica: '{text}'")
-            elif self._username != "Usuario" and self._username not in text:
-                # Agregar el nombre del usuario si no está presente
-                text = f"{text.rstrip('.')} {self._username}."
-            
-            logging.info(f"Texto final para TTS después de procesar cierre: '{text}'")
-        
-        return text, is_closing_message
-
-    def _detect_natural_closing_message(self, text: str) -> bool:
-        """
-        Detecta automáticamente si un mensaje es una despedida natural
-        basándose en patrones de texto comunes.
-        
-        Args:
-            text: El texto del mensaje a analizar
-            
-        Returns:
-            True si se detecta como mensaje de cierre natural
-        """
-        if not text:
-            return False
-            
-        # Convertir a minúsculas para análisis
-        lower_text = text.lower().strip()
-        
-        # Patrones de despedida con el nombre del usuario
-        username_patterns = [
-            f"gracias por confiar en mí hoy, {self._username.lower()}",
-            f"gracias por compartir conmigo, {self._username.lower()}",
-            f"ha sido un honor acompañarte, {self._username.lower()}",
-            f"ha sido un placer acompañarte, {self._username.lower()}",
-            f"que tengas un día tranquilo, {self._username.lower()}",
-            f"que tengas un buen día, {self._username.lower()}",
-            f"hasta pronto, {self._username.lower()}",
-            f"hasta la próxima, {self._username.lower()}",
-            f"cuídate mucho, {self._username.lower()}",
-            f"cuídate bien, {self._username.lower()}",
-            f"nos vemos pronto, {self._username.lower()}",
-            f"espero verte pronto, {self._username.lower()}",
-            f"que descanses, {self._username.lower()}",
-            f"que te vaya bien, {self._username.lower()}",
-        ]
-        
-        # Patrones de despedida generales - frases completas
-        closing_patterns = [
-            "que las herramientas que exploramos te acompañen",
-            "que las herramientas te acompañen",
-            "que las técnicas que vimos te ayuden",
-            "que los recursos que compartimos te sirvan",
-            "recuerda que tienes recursos internos muy valiosos",
-            "recuerda que tienes herramientas valiosas",
-            "recuerda las técnicas que practicamos",
-            "estoy aquí cuando necesites apoyo con la ansiedad",
-            "estoy aquí cuando necesites hablar",
-            "estoy aquí cuando me necesites",
-            "siempre puedes volver cuando necesites apoyo",
-            "puedes regresar cuando lo necesites",
-            "que tengas un día tranquilo",
-            "que tengas un buen día",
-            "que tengas una buena tarde",
-            "que tengas una buena noche",
-            "cuídate mucho",
-            "cuídate bien",
-            "hasta la próxima",
-            "hasta pronto",
-            "nos vemos pronto",
-            "que descanses bien",
-            "que te vaya muy bien",
-            "que todo salga bien",
-            "espero haberte ayudado",
-            "me alegra haber podido ayudarte",
-            "ha sido un placer acompañarte",
-            "gracias por permitirme acompañarte",
-            "gracias por compartir conmigo",
-        ]
-        
-        # Patrones de finalización con contexto - frases que indican fin de conversación
-        ending_phrases = [
-            "gracias por confiar en mí",
-            "gracias por compartir",
-            "ha sido un honor acompañarte",
-            "ha sido un placer acompañarte",
-            "espero haberte ayudado",
-            "me alegra haber podido ayudarte",
-            "que las herramientas te acompañen",
-            "que las técnicas te ayuden",
-            "recuerda que tienes recursos",
-            "recuerda las herramientas",
-            "estoy aquí cuando necesites",
-            "puedes volver cuando necesites",
-            "siempre puedes regresar",
-            "hasta la próxima sesión",
-            "nos vemos en la próxima",
-            "que tengas un día",
-            "que tengas una buena",
-            "cuídate mucho",
-            "cuídate bien",
-            "hasta pronto",
-            "hasta luego",
-            "nos vemos",
-            "que descanses",
-            "que todo salga bien",
-            "que te vaya bien",
-        ]
-        
-        # Verificar patrones con nombre de usuario
-        for pattern in username_patterns:
-            if pattern in lower_text:
-                logging.info(f"Detectado patrón de cierre con usuario: '{pattern}'")
-                return True
-        
-        # Verificar patrones generales de despedida (frases completas)
-        for pattern in closing_patterns:
-            if pattern in lower_text:
-                logging.info(f"Detectado patrón de cierre general: '{pattern}'")
-                return True
-        
-        # Detectar mensajes que terminan la conversación de forma natural
-        # Solo para mensajes relativamente cortos (menos de 300 caracteres)
-        if len(lower_text) < 300:
-            for phrase in ending_phrases:
-                if phrase in lower_text:
-                    logging.info(f"Detectada frase de finalización: '{phrase}'")
-                    return True
-        
-        # Patrones adicionales para detectar despedidas en contexto
-        # Buscar combinaciones de palabras clave que sugieren cierre
-        farewell_keywords = ["gracias", "acompañar", "ayudar", "confiar", "compartir", "herramientas", "técnicas", "recursos"]
-        closing_keywords = ["cuídate", "hasta", "nos vemos", "pronto", "día", "noche", "tarde", "descanses", "bien"]
-        
-        farewell_count = sum(1 for keyword in farewell_keywords if keyword in lower_text)
-        closing_count = sum(1 for keyword in closing_keywords if keyword in lower_text)
-        
-        # Si hay múltiples palabras clave de despedida Y de cierre, es probable que sea un mensaje de cierre
-        if farewell_count >= 2 and closing_count >= 1 and len(lower_text) < 250:
-            logging.info(f"Detectado mensaje de cierre por combinación de palabras clave (despedida: {farewell_count}, cierre: {closing_count})")
-            return True
-        
-        return False
-
-    def _process_video_suggestion(self, text: str) -> Tuple[str, Optional[Dict[str, str]]]:
-        """
-        Procesa el texto de un mensaje para detectar y extraer una sugerencia de video.
-        Soporta ambos formatos: [SUGERIR_VIDEO: Título, URL] y [SUGERIR_VIDEO: Título|URL]
-
-        Args:
-            text: El texto del mensaje.
-
-        Returns:
-            Una tupla conteniendo el texto procesado (sin la etiqueta de video)
-            y un diccionario con la información del video si se encontró, o None.
-        """
-        video_payload = None
-        video_tag_start = "[SUGERIR_VIDEO:"
-        if video_tag_start in text:
-            try:
-                start_index = text.find(video_tag_start)
-                end_index = text.find("]", start_index)
-                if start_index != -1 and end_index != -1:
-                    video_info_str = text[start_index + len(video_tag_start):end_index].strip()
-                    
-                    # Soportar tanto el formato con | como con ,
-                    if '|' in video_info_str:
-                        parts = [p.strip() for p in video_info_str.split('|')]
-                    else:
-                        parts = [p.strip() for p in video_info_str.split(',')]
-                    
-                    if len(parts) >= 2:
-                        video_title = parts[0].strip()
-                        video_url = parts[1].strip()
-                        
-                        # Validar que la URL sea válida
-                        if video_url.startswith('http'):
-                            logging.info(f"Se detectó sugerencia de video: Título='{video_title}', URL='{video_url}'")
-                            video_payload = {"title": video_title, "url": video_url}
-                            processed_text = text[:start_index].strip() + " " + text[end_index+1:].strip()
-                            text = processed_text.strip()
-                        else:
-                            logging.warning(f"URL de video inválida: {video_url}")
-                    else:
-                        logging.warning(f"Formato de video inválido: {video_info_str}")
-            except Exception as e:
-                logging.error(f"Error al procesar sugerencia de video: {e}", exc_info=True)
-        return text, video_payload
-
-    async def _on_conversation_item_added(self, item: llm.ChatMessage):
-        """
-        Callback que se ejecuta cuando se añade un nuevo item a la conversación por el LLM.
-        Procesa la respuesta del asistente, la guarda, y gestiona la reproducción de TTS.
-
-        Args:
-            item: El mensaje de chat añadido a la conversación.
-        """
-        if item.role == llm.ChatRole.ASSISTANT and item.content:
-            ai_original_response_text = item.content
-            if not ai_original_response_text:
-                logging.warning(f"Mensaje de asistente (ID: {item.id}) recibido sin contenido.")
-                return
-
-            ai_message_id = str(item.id) if item.id else f"assistant-{uuid.uuid4()}"
-            logging.info(f"Assistant message added (ID: {ai_message_id}): '{ai_original_response_text}'")
-
-            # Procesar el texto para eliminar videos y detectar despedidas
-            processed_text, video_payload = self._process_video_suggestion(ai_original_response_text)
-            processed_text, is_closing_message = self._process_closing_message(processed_text)
-            
-            # El texto procesado es lo que se mostrará en el chat
-            # Crear una versión limpia para TTS
-            processed_text_for_tts = clean_text_for_tts(processed_text)
-            
-            # Verificar si es saludo inicial
-            is_initial_greeting = self._initial_greeting_text is None
-            
-            if is_initial_greeting:
-                logging.info(f"🎯 PRIMER SALUDO DETECTADO - Almacenando texto TTS base")
-                self._initial_greeting_text = processed_text_for_tts
-
-            # Log de verificación de consistencia texto-voz
-            logging.info(f"💬 TEXTO EXACTO para mostrar en chat: '{processed_text}'")
-            logging.info(f"🔊 TEXTO EXACTO para convertir a voz: '{processed_text_for_tts}'")
-            if processed_text != processed_text_for_tts:
-                logging.info(f"🔍 DIFERENCIAS TTS detectadas:")
-                logging.info(f"   📝 Chat: {len(processed_text)} caracteres")
-                logging.info(f"   🎤 Voz: {len(processed_text_for_tts)} caracteres")
-            else:
-                logging.info(f"✅ TEXTO IDÉNTICO para chat y voz - {len(processed_text)} caracteres")
-
-            await self._save_message(ai_original_response_text, "assistant", message_id=ai_message_id)
-
-            # Almacenar metadatos para los manejadores de eventos TTS
-            self._ai_message_meta[ai_message_id] = {
-                "is_closing_message": is_closing_message,
-            }
-
-            if is_initial_greeting:
-                logging.info(f"📢 Enviando saludo inicial (ID: {ai_message_id}): '{processed_text}'")
-            else:
-                logging.info(f"💬 Enviando respuesta del asistente (ID: {ai_message_id}): '{processed_text[:100]}...'")
-
-            # IMPORTANTE: Enviar ai_response_generated ANTES del TTS para que aparezca el texto en el chat
-            video_data = video_payload if video_payload else None
-            logging.info(f"💬 Enviando evento ai_response_generated con texto para chat")
-            
-            await self._send_custom_data("ai_response_generated", {
-                "id": ai_message_id,
-                "text": processed_text,  # El texto procesado que se mostrará en el chat
-                "suggestedVideo": video_data,
-                "isInitialGreeting": is_initial_greeting
-            })
-
-            metadata_for_speak_call = {
-                "messageId": ai_message_id,
-                "is_closing_message": is_closing_message
-            }
-
-            # Reproducir TTS después de enviar el evento de texto
-            logging.info(f"🔊 Reproduciendo TTS para mensaje (ID: {ai_message_id}): '{processed_text_for_tts[:100]}...'")
-            await self._agent_session.speak(processed_text_for_tts, metadata=metadata_for_speak_call)
-
-    async def on_tts_playback_started(self, event: Any):
-        """Callback cuando el TTS comienza a reproducirse."""
-        ai_message_id = getattr(event, 'item_id', None) # Usar getattr para acceso seguro
-        if ai_message_id:
-            if message_throttler.should_log(f'tts_started_{ai_message_id}', 'tts_events'):
-                logging.debug(f"TTS Playback Started for item_id: {ai_message_id}")
-            await self._send_custom_data("tts_started", {"messageId": ai_message_id})
-        else:
-            logging.warning("on_tts_playback_started: event.item_id is missing.")
-
-    async def on_tts_playback_finished(self, event: Any):
-        """Callback cuando el TTS termina de reproducirse."""
-        ai_message_id = getattr(event, 'item_id', None) # Usar getattr para acceso seguro
-        if ai_message_id:
-            if message_throttler.should_log(f'tts_finished_{ai_message_id}', 'tts_events'):
-                logging.debug(f"TTS Playback Finished for item_id: {ai_message_id}")
-
-            is_closing_message = None
-            event_metadata = getattr(event, 'metadata', None)
-            # Intentar obtener is_closing_message desde event.metadata (poblado por nuestra llamada a speak)
-            if event_metadata and "is_closing_message" in event_metadata:
-                is_closing_message = event_metadata["is_closing_message"]
-
-            # Fallback a _ai_message_meta si no está en event.metadata
-            # (especialmente útil para el saludo inicial donde no llamamos a speak directamente)
-            if is_closing_message is None:
-                message_meta = self._ai_message_meta.get(ai_message_id)
-                if message_meta:
-                    is_closing_message = message_meta.get("is_closing_message", False)
-                else:
-                    is_closing_message = False # Default si no se encuentra
-                    if message_throttler.should_log(f'missing_meta_{ai_message_id}', 'default'):
-                        logging.warning(f"No se encontró metadata para {ai_message_id} en _ai_message_meta.")
-
-            await self._send_custom_data("tts_ended", {
-                "messageId": ai_message_id,
-                "isClosing": is_closing_message if isinstance(is_closing_message, bool) else False
-            })
-        else:
-            logging.warning("on_tts_playback_finished: event.item_id is missing.")
+# Funciones utilitarias para el manejo de participantes y metadatos
 
 def parse_participant_metadata(metadata_str: Optional[str]) -> Dict[str, Optional[str]]:
     """Parsea los metadatos del participante (JSON string) en un diccionario."""
@@ -1125,138 +358,162 @@ async def job_entrypoint(job: JobContext):
             target_remote_participant.identity,
         )
         try:
+            logging.info("🔄 Iniciando agent_session.start()...")
             await agent_session.start(
                 agent=agent,
                 room=job.room,
                 room_input_options=room_input_options, # Añadido
                 room_output_options=room_output_options, # Modificado/Añadido
             )
+            logging.info("✅ agent_session.start() completado exitosamente")
             
             # AGREGADO: Registrar evento data_received después de que la sesión esté completamente inicializada
             logging.info("AgentSession iniciada exitosamente. Registrando evento data_received...")
             agent.register_data_received_event()
+            logging.info("✅ Evento data_received registrado")
             
             # AGREGADO: Generar saludo inicial automáticamente
             logging.info("🚀 INICIANDO SECUENCIA DE SALUDO INICIAL...")
             
             # Esperar un poco para que todo el sistema se estabilice
-            logging.info("⏳ Esperando estabilización del sistema (2 segundos)...")
-            await asyncio.sleep(2)
+            logging.info("⏳ Esperando estabilización del sistema (3 segundos)...")
+            await asyncio.sleep(3)  # Aumentar de 2 a 3 segundos
+            
+            # CRÍTICO: Forzar el saludo inicial incluso si agent_session.start() falló parcialmente
+            logging.info("🎯 FORZANDO SALUDO INICIAL INMEDIATO...")
             
             # Verificar que la conexión esté estable antes de generar el saludo
             logging.info(f"🔍 Verificando estado del job.room: {job.room is not None}")
             logging.info(f"🔍 Verificando estado del job.room.local_participant: {job.room.local_participant is not None if job.room else 'N/A'}")
             
-            if not job.room or not job.room.local_participant:
-                logging.error("❌ No se puede generar saludo inicial: room o local_participant no disponible")
-            else:
-                logging.info(f"✅ Job room está disponible, generando saludo inicial para '{username}'")
+            # SIEMPRE intentar generar el saludo, incluso si hay problemas menores
+            logging.info(f"✅ Generando saludo inicial para '{username}' (forzado)")
+            
+            # Generar saludo aleatorio de múltiples opciones
+            logging.info("📝 Generando mensaje de bienvenida...")
+            immediate_greeting = generate_welcome_message(username)
+            logging.info(f"💬 Saludo generado: '{immediate_greeting}'")
+            
+            # Limpiar el saludo para TTS
+            immediate_greeting_clean = clean_text_for_tts(immediate_greeting)
+            logging.info(f"🧹 Saludo limpio para TTS: '{immediate_greeting_clean}'")
+            
+            # Crear mensaje del saludo inmediato
+            immediate_greeting_id = f"immediate-greeting-{int(time.time() * 1000)}"
+            logging.info(f"🆔 ID del saludo inicial: '{immediate_greeting_id}'")
+            
+            # Verificar que tenemos room disponible antes de enviar
+            logging.info(f"🔍 Verificando estado del agent._room: {agent._room is not None}")
+            logging.info(f"🔍 Verificando estado del agent._room.local_participant: {agent._room.local_participant is not None if agent._room else 'N/A'}")
+            
+            # FORZAR envío del saludo inicial independientemente del estado
+            logging.info("🚀 FORZANDO ENVÍO DE SALUDO INICIAL...")
+            
+            # Enviar inmediatamente el saludo al frontend
+            logging.info(f"📢 ENVIANDO SALUDO INMEDIATO AL FRONTEND...")
+            logging.info(f"🆔 ID: '{immediate_greeting_id}'")
+            logging.info(f"💬 TEXTO EXACTO que se mostrará en el chat: '{immediate_greeting}'")
+            logging.info(f"🔊 TEXTO EXACTO que se convertirá a voz: '{immediate_greeting_clean}'")
+            logging.info(f"🔍 Diferencias de limpieza TTS: Original={len(immediate_greeting)} chars, Limpio={len(immediate_greeting_clean)} chars")
+            
+            # Preparar payload
+            saludo_payload = {
+                "id": immediate_greeting_id,
+                "text": immediate_greeting,
+                "isInitialGreeting": True
+            }
+            logging.info(f"📦 Payload del saludo: {saludo_payload}")
+            
+            # Enviar al frontend
+            try:
+                logging.info("🚀 Llamando a agent._send_custom_data...")
+                await agent._send_custom_data("ai_response_generated", saludo_payload)
+                logging.info("✅ agent._send_custom_data completado exitosamente")
+            except Exception as e:
+                logging.error(f"❌ Error en agent._send_custom_data: {e}", exc_info=True)
                 
-                # Generar saludo aleatorio de múltiples opciones
-                logging.info("📝 Generando mensaje de bienvenida...")
-                immediate_greeting = generate_welcome_message(username)
-                logging.info(f"💬 Saludo generado: '{immediate_greeting}'")
-                
-                # Limpiar el saludo para TTS
-                immediate_greeting_clean = clean_text_for_tts(immediate_greeting)
-                logging.info(f"🧹 Saludo limpio para TTS: '{immediate_greeting_clean}'")
-                
-                # Crear mensaje del saludo inmediato
-                immediate_greeting_id = f"immediate-greeting-{int(time.time() * 1000)}"
-                logging.info(f"🆔 ID del saludo inicial: '{immediate_greeting_id}'")
-                
-                # Verificar que tenemos room disponible antes de enviar
-                logging.info(f"🔍 Verificando estado del agent._room: {agent._room is not None}")
-                logging.info(f"🔍 Verificando estado del agent._room.local_participant: {agent._room.local_participant is not None if agent._room else 'N/A'}")
-                
-                if not agent._room:
-                    logging.error("❌ No hay room disponible para enviar saludo inicial")
-                elif not agent._room.local_participant:
-                    logging.error("❌ No hay local_participant disponible para enviar saludo inicial")
-                else:
-                    logging.info(f"✅ Room y local_participant disponibles para enviar saludo")
-                
-                # Enviar inmediatamente el saludo al frontend
-                logging.info(f"📢 ENVIANDO SALUDO INMEDIATO AL FRONTEND...")
-                logging.info(f"🆔 ID: '{immediate_greeting_id}'")
-                logging.info(f"💬 TEXTO EXACTO que se mostrará en el chat: '{immediate_greeting}'")
-                logging.info(f"🔊 TEXTO EXACTO que se convertirá a voz: '{immediate_greeting_clean}'")
-                logging.info(f"🔍 Diferencias de limpieza TTS: Original={len(immediate_greeting)} chars, Limpio={len(immediate_greeting_clean)} chars")
-                
-                # Preparar payload
-                saludo_payload = {
-                    "id": immediate_greeting_id,
-                    "text": immediate_greeting,
-                    "isInitialGreeting": True
-                }
-                logging.info(f"📦 Payload del saludo: {saludo_payload}")
-                
-                # Enviar al frontend
+                # FALLBACK: Intentar envío directo al room
                 try:
-                    logging.info("🚀 Llamando a agent._send_custom_data...")
+                    logging.info("🔄 Intentando envío directo al room como fallback...")
+                    import json
+                    data_str = json.dumps({
+                        "type": "ai_response_generated",
+                        "payload": saludo_payload
+                    })
+                    data_bytes = data_str.encode('utf-8')
+                    
+                    if job.room and job.room.local_participant:
+                        await job.room.local_participant.publish_data(data_bytes)
+                        logging.info("✅ Fallback: Saludo enviado directamente al room")
+                    else:
+                        logging.error("❌ Fallback falló: No hay room disponible")
+                        
+                except Exception as e2:
+                    logging.error(f"❌ Fallback también falló: {e2}", exc_info=True)
+            
+            # Marcar como saludo inicial procesado
+            agent._initial_greeting_text = immediate_greeting_clean
+            
+            # Generar TTS real para que María hable
+            logging.info(f"🔊 Iniciando TTS para que María pronuncie el saludo")
+            try:
+                # Usar el método say del agent_session directamente con texto limpio
+                await agent_session.say(immediate_greeting_clean, allow_interruptions=True)
+                logging.info("✅ María está hablando - TTS iniciado exitosamente")
+                
+            except Exception as e:
+                logging.warning(f"⚠️ Error con agent_session.say: {e}, intentando método alternativo")
+                
+                try:
+                    # Método alternativo: usar el TTS directamente
+                    if hasattr(agent_session, 'tts') and agent_session.tts:
+                        tts_audio = agent_session.tts.synthesize(immediate_greeting_clean)
+                        # El audio se manejará automáticamente por el sistema
+                        logging.info("✅ TTS alternativo iniciado correctamente")
+                    else:
+                        # Si no tenemos TTS disponible, usar eventos manuales
+                        raise Exception("No hay TTS disponible")
+                
+                except Exception as e2:
+                    logging.warning(f"⚠️ Error con TTS alternativo: {e2}, usando fallback manual")
+                    
+                    # Fallback final: eventos manuales
+                    await agent._send_custom_data("tts_started", {"messageId": immediate_greeting_id})
+                    logging.info("🔊 Simulando TTS con eventos manuales")
+                    
+                    # Tiempo estimado para pronunciar el saludo
+                    await asyncio.sleep(10)  # Tiempo suficiente para el saludo completo
+                    
+                    await agent._send_custom_data("tts_ended", {
+                        "messageId": immediate_greeting_id,
+                        "isClosing": False
+                    })
+                    logging.info("🔇 TTS manual completado")
+            
+            logging.info("✅ Saludo inicial procesado completamente")
+            
+            # MECANISMO DE REENVÍO: Asegurar que el saludo llegue al frontend
+            logging.info("🔄 Iniciando mecanismo de reenvío del saludo inicial...")
+            max_retries = 3  # Reducir de 5 a 3 intentos
+            retry_interval = 2  # Reducir de 3 a 2 segundos
+            
+            for retry in range(max_retries):
+                await asyncio.sleep(retry_interval)
+                
+                logging.info(f"🔄 Reenvío #{retry + 1} del saludo inicial...")
+                try:
                     await agent._send_custom_data("ai_response_generated", saludo_payload)
-                    logging.info("✅ agent._send_custom_data completado exitosamente")
-                except Exception as e:
-                    logging.error(f"❌ Error en agent._send_custom_data: {e}", exc_info=True)
-                
-                # Marcar como saludo inicial procesado
-                agent._initial_greeting_text = immediate_greeting_clean
-                
-                # Generar TTS real para que María hable
-                logging.info(f"🔊 Iniciando TTS para que María pronuncie el saludo")
-                try:
-                    # Usar el método say del agent_session directamente con texto limpio
-                    await agent_session.say(immediate_greeting_clean, allow_interruptions=True)
-                    logging.info("✅ María está hablando - TTS iniciado exitosamente")
+                    logging.info(f"✅ Reenvío #{retry + 1} completado")
                     
                 except Exception as e:
-                    logging.warning(f"⚠️ Error con agent_session.say: {e}, intentando método alternativo")
-                    
-                    try:
-                        # Método alternativo: usar el TTS directamente
-                        if hasattr(agent_session, 'tts') and agent_session.tts:
-                            tts_audio = agent_session.tts.synthesize(immediate_greeting_clean)
-                            # El audio se manejará automáticamente por el sistema
-                            logging.info("✅ TTS alternativo iniciado correctamente")
-                        else:
-                            # Si no tenemos TTS disponible, usar eventos manuales
-                            raise Exception("No hay TTS disponible")
-                    
-                    except Exception as e2:
-                        logging.warning(f"⚠️ Error con TTS alternativo: {e2}, usando fallback manual")
-                        
-                        # Fallback final: eventos manuales
-                        await agent._send_custom_data("tts_started", {"messageId": immediate_greeting_id})
-                        logging.info("🔊 Simulando TTS con eventos manuales")
-                        
-                        # Tiempo estimado para pronunciar el saludo
-                        await asyncio.sleep(10)  # Tiempo suficiente para el saludo completo
-                        
-                        await agent._send_custom_data("tts_ended", {
-                            "messageId": immediate_greeting_id,
-                            "isClosing": False
-                        })
-                        logging.info("🔇 TTS manual completado")
-                
-                logging.info("✅ Saludo inicial procesado completamente")
-                
-                # COMENTADO: Saludo personalizado adicional deshabilitado para evitar duplicados
-                # El saludo inmediato ya incluye el nombre del usuario y es suficiente
-                # try:
-                #     greeting_instructions = f"Genera un saludo personalizado muy breve (máximo 2 oraciones) para {username} en una sesión de terapia virtual. Sé cálida pero profesional."
-                #     
-                #     # Esto generará otro mensaje, pero no será el saludo inicial
-                #     logging.info(f"🎯 Generando saludo personalizado adicional...")
-                #     agent_session.generate_reply(user_input=greeting_instructions)
-                #     
-                # except Exception as e:
-                #     logging.warning(f"⚠️ Error al generar saludo personalizado adicional: {e}")
-                #     # No es crítico si falla, ya tenemos el saludo inmediato
-                
-                # Mantener el job vivo hasta que la sesión del agente termine
-                logging.info("🔄 AgentSession.start() completado. Esperando a que el evento 'session_ended' se active...")
-                await session_ended_event.wait()
-                logging.info("🏁 Evento 'session_ended' activado. El job_entrypoint continuará para finalizar.")
+                    logging.warning(f"⚠️ Reenvío #{retry + 1} falló: {e}")
+            
+            logging.info("🏁 Mecanismo de reenvío completado")
+            
+            # Mantener el job vivo hasta que la sesión del agente termine
+            logging.info("🔄 AgentSession.start() completado. Esperando a que el evento 'session_ended' se active...")
+            await session_ended_event.wait()
+            logging.info("🏁 Evento 'session_ended' activado. El job_entrypoint continuará para finalizar.")
 
         except Exception as e:
             logging.critical(
