@@ -174,10 +174,59 @@ Es importante recordar que si sientes pensamientos de autolesión, debes buscar 
 5. **Compatibilidad**: El sistema mantiene compatibilidad con `suggestedVideo` existente
 6. **Límites**: No hay límite en la cantidad de elementos enriquecidos por respuesta
 
+## Funcionalidades Automáticas
+
+### QR de Pago Automático
+Cuando se detecta un cierre de sesión (despedidas naturales o etiqueta `[CIERRE_DE_SESION]`), el sistema automáticamente agrega:
+
+- **Mensaje**: "Si esta conversación te fue útil, puedes apoyar el proyecto con una contribución voluntaria."
+- **Imagen QR**: Código QR para contribución desde `/img/QR.jpg`
+- **Tarjeta informativa**: Explicación sobre el apoyo voluntario
+
+**Ejemplo automático:**
+```
+María: "Gracias por confiar en mí hoy, Juan."
+[El sistema automáticamente agrega QR + tarjeta + mensaje]
+```
+
+### Detección Automática de Enlaces
+El sistema detecta automáticamente URLs en el texto y crea botones interactivos:
+
+- **YouTube**: Botón "Ver Video" (azul, icono play)
+- **Google Docs**: Botón "Ver Documento" (cian, icono info)  
+- **Otros enlaces**: Botón "Abrir Enlace" (gris, icono info)
+
+**Ejemplo:**
+```
+Texto: "Te comparto este recurso: https://youtube.com/watch?v=ejemplo"
+Resultado: "Te comparto este recurso: [enlace]" + Botón "Ver Video"
+```
+
+### Botones Interactivos para Videos
+Cuando se usa `[SUGERIR_VIDEO]`, además del enlace tradicional se crean automáticamente:
+
+- **Botón interactivo**: "Ver: [Título]" con icono play
+- **Tarjeta explicativa**: Con instrucciones de uso
+- **Compatibilidad**: Mantiene el sistema de video tradicional
+
+## Acciones de Botones Soportadas
+
+### Acciones Automáticas
+- `open_video:[URL]`: Abre video en nueva pestaña
+- `open_link:[URL]`: Abre enlace en nueva pestaña
+
+### Acciones Personalizadas
+- `start_breathing_exercise`: Iniciar ejercicio de respiración
+- `schedule_reminder`: Programar recordatorio
+- `show_more_techniques`: Mostrar más técnicas
+- `contact_crisis_line`: Contactar línea de crisis
+
 ## Mejores Prácticas
 
 - **Combina elementos**: Usa diferentes tipos de contenido para crear respuestas más útiles
 - **Sé específico**: Usa títulos descriptivos y acciones claras
 - **Mantén la cohesión**: Asegúrate de que el contenido enriquecido complemente el texto
 - **Considera el contexto**: Usa el tipo de elemento más apropiado para cada situación
-- **Accesibilidad**: Siempre incluye texto alternativo para imágenes 
+- **Accesibilidad**: Siempre incluye texto alternativo para imágenes
+- **No deletrees URLs**: El sistema crea botones automáticamente
+- **Confía en la automatización**: El QR y botones se generan automáticamente 

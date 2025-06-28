@@ -158,64 +158,164 @@ class MessageProcessor:
         return processed_text, rich_content if rich_content else None
     
     @staticmethod
-    def process_closing_message(text: str, username: str) -> Tuple[str, bool]:
+    def detect_and_create_link_buttons(text: str) -> Tuple[str, Optional[Dict[str, Any]]]:
         """
-        Procesa el texto de un mensaje para detectar y limpiar una señal de cierre de sesión.
-        Busca la etiqueta [CIERRE_DE_SESION] en el texto, la remueve, y devuelve
-        información sobre si se detectó esta señal.
+        Detecta URLs en el texto y crea automáticamente botones interactivos para evitar
+        que el agente tenga que deletrear enlaces.
+        
+        Args:
+            text: El texto del mensaje.
+            
+        Returns:
+            Una tupla con el texto procesado y contenido enriquecido con botones.
+        """
+        import re
+        
+        # Detectar URLs en el texto (patrón más amplio)
+        url_pattern = r'https?://(?:[-\w.])+(?:[:\d]+)?(?:/(?:[\w/_.])*(?:\?(?:[\w&=%.])*)?(?:#(?:[\w.])*)?)?'
+        urls_found = re.findall(url_pattern, text)
+        
+        if not urls_found:
+            return text, None
+            
+        link_buttons = []
+        processed_text = text
+        
+        for url in urls_found:
+            # Determinar el título del botón basado en el dominio
+            if 'youtube.com' in url or 'youtu.be' in url:
+                button_title = "Ver Video"
+                action = f"open_video:{url}"
+                icon = "play"
+                style = "primary"
+            elif 'docs.google.com' in url:
+                button_title = "Ver Documento"
+                action = f"open_link:{url}"
+                icon = "info"
+                style = "info"
+            else:
+                button_title = "Abrir Enlace"
+                action = f"open_link:{url}"
+                icon = "info"
+                style = "secondary"
+            
+            link_buttons.append({
+                "title": button_title,
+                "action": action,
+                "style": style,
+                "icon": icon
+            })
+            
+            # Reemplazar la URL con texto más natural
+            processed_text = processed_text.replace(url, "[enlace]")
+            logging.info(f"🔗 URL detectada y convertida a botón: {url}")
+        
+        if link_buttons:
+            return processed_text, {"buttons": link_buttons}
+        
+        return text, None
+    
+    @staticmethod
+    def process_closing_message(text: str, username: str) -> Tuple[str, bool, Optional[Dict[str, Any]]]:
+        """
+        Procesa el texto de un mensaje para detectar señales de cierre de sesión.
+        Maneja tanto cierres manuales como timeouts automáticos de 30 minutos.
 
         Args:
             text: El texto del mensaje.
-            username: El nombre del usuario para detectar despedidas automáticas.
+            username: El nombre del usuario.
 
         Returns:
-            Una tupla conteniendo el texto procesado (sin la etiqueta de cierre)
-            y un booleano indicando si se detectó la señal de cierre.
+            Una tupla conteniendo el texto procesado, un booleano indicando si se detectó 
+            señal de cierre, y contenido enriquecido con QR de pago si es cierre de sesión.
         """
         is_closing_message = False
+        closing_rich_content = None
         
-        # Detectar automáticamente despedidas naturales y añadir el tag internamente
-        auto_detected_closing = detect_natural_closing_message(text, username)
-        
-        # Si ya contiene la etiqueta manual o se detectó automáticamente
-        if "[CIERRE_DE_SESION]" in text or auto_detected_closing:
+        # Detectar timeout de 30 minutos
+        if "[TIMEOUT_30_MINUTOS]" in text:
             is_closing_message = True
+            logging.info(f"🕐 Detectado timeout de 30 minutos para usuario: {username}")
             
-            if "[CIERRE_DE_SESION]" in text:
-                logging.info(f"Se detectó señal manual [CIERRE_DE_SESION] en el texto: '{text}'")
-                # Remover completamente la etiqueta y limpiar espacios
-                text = text.replace("[CIERRE_DE_SESION]", "").strip()
+            # Generar mensaje de despedida especial por timeout de 30 minutos
+            user_name = username if username and username != "Usuario" else ""
+            if user_name:
+                text = f"Ha sido un verdadero honor acompañarte durante estos 30 minutos, {user_name}. Agradezco mucho que hayas compartido este tiempo conmigo y que hayas confiado en mí para hablar sobre lo que te preocupa. Espero de corazón haber sido de alguna utilidad y que las herramientas que exploramos juntos puedan acompañarte en tu día a día. Te deseo mucho bienestar y tranquilidad. Muchas gracias por tu confianza."
             else:
-                logging.info(f"Se detectó despedida automática en el texto: '{text}'")
+                text = "Ha sido un verdadero honor acompañarte durante estos 30 minutos. Agradezco mucho que hayas compartido este tiempo conmigo y que hayas confiado en mí para hablar sobre lo que te preocupa. Espero de corazón haber sido de alguna utilidad y que las herramientas que exploramos juntos puedan acompañarte en tu día a día. Te deseo mucho bienestar y tranquilidad. Muchas gracias por tu confianza."
+            
+            # Agregar mensaje sobre contribución voluntaria
+            text = f"{text} Si esta conversación te fue útil, puedes apoyar el proyecto con una contribución voluntaria."
+            
+        # Detectar cierre manual (mantener funcionalidad existente pero sin detección automática)
+        elif "[CIERRE_DE_SESION]" in text:
+            is_closing_message = True
+            logging.info(f"Se detectó señal manual [CIERRE_DE_SESION] en el texto: '{text}'")
+            # Remover completamente la etiqueta y limpiar espacios
+            text = text.replace("[CIERRE_DE_SESION]", "").strip()
             
             # Asegurar que hay texto válido para el TTS
             if not text or len(text.strip()) == 0:
-                # Si el texto quedó vacío, usar un mensaje de despedida genérico
                 text = f"Hasta pronto, {username}."
                 logging.info(f"Texto vacío después de procesar cierre, usando despedida genérica: '{text}'")
             elif username != "Usuario" and username not in text:
-                # Agregar el nombre del usuario si no está presente
                 text = f"{text.rstrip('.')} {username}."
             
+            # Agregar mensaje sobre el apoyo y QR de pago automáticamente
+            text = f"{text} Si esta conversación te fue útil, puedes apoyar el proyecto con una contribución voluntaria."
+        
+        # Si es cualquier tipo de cierre, agregar contenido enriquecido con QR
+        if is_closing_message:
+            closing_rich_content = {
+                "images": [{
+                    "title": "Código QR para contribución voluntaria",
+                    "url": "/img/QR.jpg", 
+                    "alt": "QR de pago para apoyo al proyecto María",
+                    "caption": "Escanea este código para hacer una contribución voluntaria y apoyar el desarrollo de María"
+                }],
+                "buttons": [{
+                    "title": "Compartir mi experiencia",
+                    "action": "open_feedback",
+                    "style": "primary",
+                    "icon": "message-circle"
+                }],
+                "cards": [{
+                    "title": "Apoyo Voluntario",
+                    "content": "Tu contribución nos ayuda a mantener y mejorar María para que más personas puedan acceder a acompañamiento emocional.",
+                    "type": "info",
+                    "items": [
+                        "Contribución completamente voluntaria",
+                        "Ayuda a mantener el servicio gratuito", 
+                        "Permite mejoras continuas",
+                        "Apoya la investigación en IA para salud mental"
+                    ]
+                }]
+            }
+            
+            logging.info(f"💰 Agregado QR de pago automáticamente al cierre de sesión")
             logging.info(f"Texto final para TTS después de procesar cierre: '{text}'")
         
-        return text, is_closing_message
+        return text, is_closing_message, closing_rich_content
 
     @staticmethod
-    def process_video_suggestion(text: str) -> Tuple[str, Optional[Dict[str, str]]]:
+    def process_video_suggestion(text: str) -> Tuple[str, Optional[Dict[str, str]], Optional[Dict[str, Any]]]:
         """
         Procesa el texto de un mensaje para detectar y extraer una sugerencia de video.
+        Crea automáticamente botones interactivos para reproducir videos sin deletrear URLs.
         Soporta ambos formatos: [SUGERIR_VIDEO: Título, URL] y [SUGERIR_VIDEO: Título|URL]
 
         Args:
             text: El texto del mensaje.
 
         Returns:
-            Una tupla conteniendo el texto procesado (sin la etiqueta de video)
-            y un diccionario con la información del video si se encontró, o None.
+            Una tupla conteniendo el texto procesado (sin la etiqueta de video),
+            un diccionario con la información del video (compatibilidad), y
+            contenido enriquecido con botones interactivos.
         """
         video_payload = None
+        video_rich_content = None
         video_tag_start = "[SUGERIR_VIDEO:"
+        
         if video_tag_start in text:
             try:
                 start_index = text.find(video_tag_start)
@@ -235,17 +335,43 @@ class MessageProcessor:
                         
                         # Validar que la URL sea válida
                         if video_url.startswith('http'):
-                            logging.info(f"Se detectó sugerencia de video: Título='{video_title}', URL='{video_url}'")
+                            logging.info(f"🎥 Video detectado: Título='{video_title}', URL='{video_url}'")
+                            
+                            # Mantener compatibilidad con sistema anterior
                             video_payload = {"title": video_title, "url": video_url}
+                            
+                            # Crear botón interactivo para el video
+                            video_rich_content = {
+                                "buttons": [{
+                                    "title": f"Ver: {video_title}",
+                                    "action": f"open_video:{video_url}",
+                                    "style": "primary",
+                                    "icon": "play"
+                                }],
+                                "cards": [{
+                                    "title": "Video Recomendado",
+                                    "content": f"Te he preparado un video que puede ayudarte: {video_title}",
+                                    "type": "info",
+                                    "items": [
+                                        "Presiona el botón para ver el video",
+                                        "Se abrirá en una nueva pestaña",
+                                        "Puedes pausar y volver cuando quieras"
+                                    ]
+                                }]
+                            }
+                            
                             processed_text = text[:start_index].strip() + " " + text[end_index+1:].strip()
                             text = processed_text.strip()
+                            
+                            logging.info(f"🔘 Botón interactivo creado para video: {video_title}")
                         else:
                             logging.warning(f"URL de video inválida: {video_url}")
                     else:
                         logging.warning(f"Formato de video inválido: {video_info_str}")
             except Exception as e:
                 logging.error(f"Error al procesar sugerencia de video: {e}", exc_info=True)
-        return text, video_payload
+                
+        return text, video_payload, video_rich_content
 
 class MariaVoiceAgent(Agent):
     """
@@ -572,8 +698,9 @@ class MariaVoiceAgent(Agent):
 
             # Procesar el texto para extraer contenido enriquecido y detectar despedidas
             processed_text, rich_content = MessageProcessor.process_rich_content(ai_original_response_text)
-            processed_text, video_payload = MessageProcessor.process_video_suggestion(processed_text)  # Para compatibilidad
-            processed_text, is_closing_message = MessageProcessor.process_closing_message(processed_text, self._username)
+            processed_text, video_payload, video_rich_content = MessageProcessor.process_video_suggestion(processed_text)
+            processed_text, auto_link_content = MessageProcessor.detect_and_create_link_buttons(processed_text)
+            processed_text, is_closing_message, closing_rich_content = MessageProcessor.process_closing_message(processed_text, self._username)
             
             # El texto procesado es lo que se mostrará en el chat
             # Crear una versión limpia para TTS
@@ -611,9 +738,30 @@ class MariaVoiceAgent(Agent):
             # IMPORTANTE: Enviar ai_response_generated ANTES del TTS para que aparezca el texto en el chat
             video_data = video_payload if video_payload else None
             
-            # Combinar rich_content con video para compatibilidad
+            # Combinar rich_content con contenido de videos, cierre y compatibilidad
             combined_rich_content = rich_content.copy() if rich_content else {}
-            if video_data and "suggestedVideo" not in combined_rich_content:
+            
+            # Función helper para combinar contenido enriquecido
+            def merge_rich_content(target, source, source_name):
+                if source:
+                    for key in ["images", "links", "buttons", "cards"]:
+                        if key in source:
+                            if key not in target:
+                                target[key] = []
+                            target[key].extend(source[key])
+                    logging.info(f"✅ {source_name} combinado con respuesta")
+            
+            # Agregar contenido de videos interactivos
+            merge_rich_content(combined_rich_content, video_rich_content, "Botones de video")
+            
+            # Agregar botones de enlaces automáticos
+            merge_rich_content(combined_rich_content, auto_link_content, "Botones automáticos de enlaces")
+            
+            # Agregar contenido de cierre de sesión si existe
+            merge_rich_content(combined_rich_content, closing_rich_content, "Contenido de QR de pago")
+            
+            # Agregar video para compatibilidad (solo si no hay botones de video)
+            if video_data and "suggestedVideo" not in combined_rich_content and not video_rich_content:
                 combined_rich_content["suggestedVideo"] = video_data
             
             payload_data = {
