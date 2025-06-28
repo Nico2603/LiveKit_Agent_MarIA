@@ -1,8 +1,34 @@
-# Sistema de Respuestas Enriquecidas para María
+# Sistema de Respuestas Enriquecidas de María
 
-El agente María ahora soporta respuestas enriquecidas que incluyen elementos interactivos más allá del texto y TTS. Este documento describe todas las etiquetas disponibles y cómo usarlas.
+María cuenta con un sistema avanzado de respuestas enriquecidas que permite crear experiencias interactivas más allá del texto y voz. Este sistema está **completamente implementado** y funcional.
 
-## Etiquetas Disponibles
+## 🎯 Funcionalidades Automáticas
+
+### QR de Pago Automático
+Al finalizar una sesión (después de 30 minutos o despedidas naturales), el sistema automáticamente agrega:
+- **Mensaje ampliado**: "Si esta conversación te fue útil, puedes apoyar el proyecto con una contribución voluntaria."
+- **Imagen QR**: Código QR para contribución desde `/img/QR.jpg`
+- **Tarjeta informativa**: Explicación sobre el apoyo voluntario
+
+### Detección Automática de Enlaces
+El sistema detecta automáticamente URLs en el texto y crea botones interactivos:
+- **YouTube**: Botón "Ver Video" (azul, icono play)
+- **Google Docs**: Botón "Ver Documento" (cian, icono info)  
+- **Otros enlaces**: Botón "Abrir Enlace" (gris, icono info)
+
+**Ejemplo automático:**
+```
+María: "Te comparto este recurso: https://youtube.com/watch?v=ejemplo"
+Resultado: "Te comparto este recurso: [enlace]" + Botón "Ver Video"
+```
+
+### Botones de Video Automáticos
+Cuando se usa `[SUGERIR_VIDEO]`, se crean automáticamente:
+- **Botón interactivo**: "Ver: [Título]" con icono play
+- **Tarjeta explicativa**: Con instrucciones de uso
+- **Compatibilidad**: Mantiene el sistema tradicional
+
+## 📝 Etiquetas Manuales Disponibles
 
 ### 1. Imágenes
 Muestra imágenes con título y descripción opcional.
@@ -14,18 +40,8 @@ Muestra imágenes con título y descripción opcional.
 
 **Ejemplo:**
 ```
-Te recomiendo esta técnica de respiración:
-
 [IMAGEN: Técnica de respiración 4-7-8, https://ejemplo.com/respiracion.jpg, Diagrama de respiración, Esta imagen muestra los pasos para la técnica 4-7-8]
-
-La técnica consiste en...
 ```
-
-**Parámetros:**
-- `título` (requerido): Título que se mostrará
-- `url` (requerido): URL de la imagen (debe empezar con http)
-- `alt` (opcional): Texto alternativo para accesibilidad (por defecto usa el título)
-- `descripción` (opcional): Descripción adicional que aparece debajo
 
 ### 2. Enlaces
 Crea botones de enlaces a recursos externos.
@@ -35,126 +51,108 @@ Crea botones de enlaces a recursos externos.
 [ENLACE: título, url, descripción?, tipo?]
 ```
 
+**Tipos disponibles:**
+- `article`: Artículos (azul, icono documento)
+- `resource`: Recursos (verde, icono estrella)
+- `guide`: Guías (morado, icono bombilla)
+- `external`: Enlaces externos (gris, icono enlace) - **por defecto**
+
 **Ejemplo:**
 ```
-Aquí tienes algunos recursos adicionales:
-
 [ENLACE: Guía completa sobre ansiedad, https://example.com/guia-ansiedad, Una guía detallada sobre manejo de la ansiedad, guide]
-
-[ENLACE: Artículo científico, https://example.com/articulo, Investigación reciente sobre técnicas de relajación, article]
 ```
 
-**Parámetros:**
-- `título` (requerido): Texto del botón
-- `url` (requerido): URL del enlace (debe empezar con http)
-- `descripción` (opcional): Descripción del enlace
-- `tipo` (opcional): Tipo de enlace que afecta el color y icono
-  - `article`: Artículos (azul, icono de documento)
-  - `resource`: Recursos (verde, icono de estrella)
-  - `guide`: Guías (morado, icono de bombilla)
-  - `external`: Enlaces externos (gris, icono de enlace externo) - **por defecto**
-
 ### 3. Botones Interactivos
-Crea botones que pueden ejecutar acciones específicas.
+Crea botones que ejecutan acciones específicas.
 
 **Formato:**
 ```
 [BOTON: título, acción, estilo?, icono?]
 ```
 
+**Estilos disponibles:**
+- `primary`: Azul (por defecto)
+- `secondary`: Gris
+- `success`: Verde
+- `warning`: Amarillo
+- `info`: Cian
+
+**Iconos disponibles:**
+- `play`: Reproducir
+- `check`: Verificación
+- `info`: Información
+- `activity`: Actividad
+
 **Ejemplo:**
 ```
-¿Te gustaría probar alguna de estas técnicas?
-
-[BOTON: Iniciar ejercicio de respiración, start_breathing_exercise, primary, play]
-
-[BOTON: Programar recordatorio, schedule_reminder, info, check]
-
-[BOTON: Obtener más información, show_info, secondary, info]
+[BOTON: Iniciar ejercicio de respiración, start_breathing_exercise, success, play]
 ```
 
-**Parámetros:**
-- `título` (requerido): Texto del botón
-- `acción` (requerido): Identificador de la acción a ejecutar
-- `estilo` (opcional): Estilo visual del botón
-  - `primary`: Azul (por defecto)
-  - `secondary`: Gris
-  - `success`: Verde
-  - `warning`: Amarillo
-  - `info`: Cian
-- `icono` (opcional): Icono a mostrar
-  - `play`: Icono de reproducir
-  - `check`: Icono de verificación
-  - `info`: Icono de información
-  - `activity`: Icono de actividad
-
 ### 4. Tarjetas Informativas
-Muestra información estructurada en tarjetas con listas opcionales.
+Muestra información estructurada con listas opcionales.
 
 **Formato:**
 ```
 [TARJETA: título, contenido, tipo?, item1|item2|item3...]
 ```
 
+**Tipos disponibles:**
+- `tip`: Consejos (amarillo, bombilla)
+- `technique`: Técnicas (azul, actividad)
+- `exercise`: Ejercicios (verde, play)
+- `info`: Información (cian, info) - **por defecto**
+- `warning`: Advertencias (naranja, triángulo)
+
 **Ejemplo:**
 ```
-Aquí tienes algunos consejos para manejar la ansiedad:
-
-[TARJETA: Técnica de Respiración Profunda, Esta técnica te ayuda a calmarte rápidamente cuando sientes ansiedad, technique, Inhala por 4 segundos|Mantén la respiración por 7 segundos|Exhala por 8 segundos|Repite 4 veces]
-
-[TARJETA: Consejo Importante, Recuerda que es normal sentir ansiedad ocasionalmente, tip, Acepta tus emociones|No juzgues tus sentimientos|Busca apoyo cuando lo necesites]
+[TARJETA: Técnica 4-7-8 para Dormir, Esta técnica calma tu sistema nervioso rápidamente, technique, Inhala por la nariz durante 4 segundos|Retén la respiración por 7 segundos|Exhala por la boca durante 8 segundos|Repite 4 ciclos]
 ```
 
-**Parámetros:**
-- `título` (requerido): Título de la tarjeta
-- `contenido` (requerido): Contenido principal de la tarjeta
-- `tipo` (opcional): Tipo de tarjeta que afecta el color y icono
-  - `tip`: Consejos (amarillo, bombilla)
-  - `technique`: Técnicas (azul, actividad)
-  - `exercise`: Ejercicios (verde, play)
-  - `info`: Información (cian, info) - **por defecto**
-  - `warning`: Advertencias (naranja, triángulo)
-- `items` (opcional): Lista de elementos separados por `|`
-
 ### 5. Videos (Compatibilidad)
-Mantiene soporte para la etiqueta de videos existente.
+Mantiene soporte para la etiqueta existente.
 
 **Formato:**
 ```
 [SUGERIR_VIDEO: título, url]
 ```
 
-**Ejemplo:**
+## 🚀 Ejemplo Completo de Uso
+
+**Situación:** Usuario con ansiedad nocturna
+
+**María responde:**
 ```
-Te recomiendo este video sobre técnicas de relajación:
+Entiendo esa inquietud que sientes al llegar la noche. Es muy común que la mente se acelere cuando queremos descansar. Te voy a compartir una técnica muy efectiva:
 
-[SUGERIR_VIDEO: Meditación guiada para la ansiedad, https://youtube.com/watch?v=ejemplo]
-```
+[TARJETA: Técnica 4-7-8 para Dormir, Esta técnica calma tu sistema nervioso rápidamente, technique, Inhala por la nariz durante cuatro segundos|Retén la respiración por siete segundos|Exhala por la boca durante ocho segundos|Repite cuatro ciclos]
 
-## Ejemplos Completos
+Te comparto una imagen que muestra el patrón visual:
 
-### Respuesta con múltiples elementos:
-```
-Entiendo que estás sintiendo ansiedad. Te voy a compartir algunas técnicas que pueden ayudarte:
+[IMAGEN: Respiración 4-7-8, https://ejemplo.com/respiracion-478.jpg, Diagrama de respiración, Esta imagen muestra cómo seguir el ritmo de la técnica 4-7-8]
 
-[TARJETA: Técnica de los 5 sentidos, Esta técnica te ayuda a conectarte con el presente, technique, Identifica 5 cosas que puedes ver|Identifica 4 cosas que puedes tocar|Identifica 3 cosas que puedes oír|Identifica 2 cosas que puedes oler|Identifica 1 cosa que puedes saborear]
+¿Te gustaría que practiquemos esta técnica juntos ahora?
 
-[IMAGEN: Técnica de respiración 4-7-8, https://ejemplo.com/respiracion.jpg, Técnica de respiración, Esta imagen muestra el patrón de respiración recomendado]
+[BOTON: Practicar respiración ahora, start_breathing_exercise, success, play]
 
-¿Te gustaría probar la técnica de respiración ahora?
+También tengo un video guiado que puede ayudarte:
 
-[BOTON: Iniciar ejercicio guiado, start_breathing_exercise, success, play]
+[SUGERIR_VIDEO: Meditación 4-7-8 para dormir, https://www.youtube.com/watch?v=ejemplo]
 
-[BOTON: Ver más técnicas, show_more_techniques, info, info]
+Si quieres explorar más técnicas, aquí tienes recursos adicionales:
 
-También puedes consultar estos recursos adicionales:
-
-[ENLACE: Guía completa sobre ansiedad, https://ejemplo.com/guia, Una guía detallada sobre el manejo de la ansiedad, guide]
-
-[SUGERIR_VIDEO: Meditación para la ansiedad, https://youtube.com/watch?v=ejemplo]
+[ENLACE: Guía completa sobre ansiedad nocturna, https://ejemplo.com/ansiedad-nocturna, Manual con técnicas específicas para la noche, guide]
 ```
 
-### Respuesta con advertencia:
+### Resultado Visual:
+1. ✅ **Tarjeta azul** con técnica y lista de pasos
+2. ✅ **Imagen** del diagrama de respiración
+3. ✅ **Botón verde "Practicar respiración ahora"** con icono de play
+4. ✅ **Botón azul "Ver: Meditación 4-7-8 para dormir"** (creado automáticamente)
+5. ✅ **Tarjeta informativa** sobre el video recomendado
+6. ✅ **Botón morado "Guía completa sobre ansiedad nocturna"** con icono de guía
+
+## ⚠️ Respuesta con Advertencia
+
 ```
 Es importante recordar que si sientes pensamientos de autolesión, debes buscar ayuda profesional inmediatamente.
 
@@ -165,51 +163,7 @@ Es importante recordar que si sientes pensamientos de autolesión, debes buscar 
 [ENLACE: Recursos de salud mental, https://ejemplo.com/recursos, Directorio de profesionales de salud mental, resource]
 ```
 
-## Notas Importantes
-
-1. **Orden de procesamiento**: Las etiquetas se procesan en el orden que aparecen en el texto
-2. **URLs válidas**: Todas las URLs deben empezar con `http` o `https`
-3. **Separación por comas**: Los parámetros se separan por comas, los items de listas por `|`
-4. **Parámetros opcionales**: Se pueden omitir parámetros opcionales, pero mantener las comas si hay parámetros posteriores
-5. **Compatibilidad**: El sistema mantiene compatibilidad con `suggestedVideo` existente
-6. **Límites**: No hay límite en la cantidad de elementos enriquecidos por respuesta
-
-## Funcionalidades Automáticas
-
-### QR de Pago Automático
-Cuando se detecta un cierre de sesión (despedidas naturales o etiqueta `[CIERRE_DE_SESION]`), el sistema automáticamente agrega:
-
-- **Mensaje**: "Si esta conversación te fue útil, puedes apoyar el proyecto con una contribución voluntaria."
-- **Imagen QR**: Código QR para contribución desde `/img/QR.jpg`
-- **Tarjeta informativa**: Explicación sobre el apoyo voluntario
-
-**Ejemplo automático:**
-```
-María: "Gracias por confiar en mí hoy, Juan."
-[El sistema automáticamente agrega QR + tarjeta + mensaje]
-```
-
-### Detección Automática de Enlaces
-El sistema detecta automáticamente URLs en el texto y crea botones interactivos:
-
-- **YouTube**: Botón "Ver Video" (azul, icono play)
-- **Google Docs**: Botón "Ver Documento" (cian, icono info)  
-- **Otros enlaces**: Botón "Abrir Enlace" (gris, icono info)
-
-**Ejemplo:**
-```
-Texto: "Te comparto este recurso: https://youtube.com/watch?v=ejemplo"
-Resultado: "Te comparto este recurso: [enlace]" + Botón "Ver Video"
-```
-
-### Botones Interactivos para Videos
-Cuando se usa `[SUGERIR_VIDEO]`, además del enlace tradicional se crean automáticamente:
-
-- **Botón interactivo**: "Ver: [Título]" con icono play
-- **Tarjeta explicativa**: Con instrucciones de uso
-- **Compatibilidad**: Mantiene el sistema de video tradicional
-
-## Acciones de Botones Soportadas
+## 🔧 Acciones de Botones Soportadas
 
 ### Acciones Automáticas
 - `open_video:[URL]`: Abre video en nueva pestaña
@@ -221,12 +175,30 @@ Cuando se usa `[SUGERIR_VIDEO]`, además del enlace tradicional se crean automá
 - `show_more_techniques`: Mostrar más técnicas
 - `contact_crisis_line`: Contactar línea de crisis
 
-## Mejores Prácticas
+## 📋 Notas Técnicas Importantes
 
-- **Combina elementos**: Usa diferentes tipos de contenido para crear respuestas más útiles
-- **Sé específico**: Usa títulos descriptivos y acciones claras
-- **Mantén la cohesión**: Asegúrate de que el contenido enriquecido complemente el texto
-- **Considera el contexto**: Usa el tipo de elemento más apropiado para cada situación
-- **Accesibilidad**: Siempre incluye texto alternativo para imágenes
+1. **Orden de procesamiento**: Las etiquetas se procesan en el orden que aparecen
+2. **URLs válidas**: Todas las URLs deben empezar con `http` o `https`
+3. **Separación**: Parámetros se separan por comas, items de listas por `|`
+4. **Parámetros opcionales**: Se pueden omitir manteniendo las comas
+5. **Compatibilidad total**: Mantiene compatibilidad con sistemas anteriores
+6. **Sin límites**: No hay límite en cantidad de elementos por respuesta
+
+## 🎨 Mejores Prácticas
+
 - **No deletrees URLs**: El sistema crea botones automáticamente
-- **Confía en la automatización**: El QR y botones se generan automáticamente 
+- **Confía en la automatización**: El QR y botones se generan automáticamente
+- **Combina elementos**: Usa diferentes tipos para respuestas más ricas
+- **Sé específico**: Usa títulos descriptivos y acciones claras
+- **Mantén cohesión**: El contenido enriquecido debe complementar el texto
+- **Considera el contexto**: Usa el elemento más apropiado para cada situación
+- **Accesibilidad**: Siempre incluye texto alternativo para imágenes
+
+## 🔍 Ventajas del Sistema
+
+1. **Para María**: No necesita deletrear URLs ni mencionar mecánicas técnicas
+2. **Para el usuario**: Experiencia visual e interactiva más rica
+3. **Para el proyecto**: QR de pago integrado naturalmente
+4. **Para desarrolladores**: Sistema extensible y compatible
+
+Este sistema convierte cada conversación en una experiencia multimedia rica y profesional, manteniendo la naturalidad de la interacción por voz. 
