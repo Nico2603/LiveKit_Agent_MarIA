@@ -28,6 +28,7 @@ from maria_agent import MariaVoiceAgent
 from plugin_loader import plugin_loader
 from http_session_manager import http_session_manager, TimeoutManager
 from adaptive_tts_manager import create_adaptive_tts_manager
+from user_session_manager import get_user_session_manager
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -256,7 +257,27 @@ async def job_entrypoint(job: JobContext):
     # Parsear metadata del participante para obtener chat_session_id, username, etc.
     parsed_metadata = parse_participant_metadata(participant_metadata)
     chat_session_id = parsed_metadata.get("chatSessionId")
+    user_id = parsed_metadata.get("userId")
     username = parsed_metadata.get("username", "Usuario") # Default a "Usuario" si no se provee
+    
+    # Inicializar gestor de sesiones de usuario
+    user_manager = get_user_session_manager(settings)
+    
+    # Registrar sesión de usuario si tenemos userId
+    if user_id:
+        success, error_msg = await user_manager.register_user_session(
+            user_id=user_id,
+            chat_session_id=chat_session_id or "temp_session",
+            participant_identity=target_remote_participant.identity
+        )
+        if not success:
+            logging.error(f"❌ Error registrando sesión de usuario: {error_msg}")
+            await job.disconnect()
+            return
+        else:
+            logging.info(f"✅ Sesión de usuario registrada: {user_id}")
+    else:
+        logging.warning("⚠️ No se encontró userId en metadata - continuando sin rate limiting por usuario")
 
     # CORREGIR: Si no hay username en metadata, extraer del participant.identity
     if not username or username == "Usuario":

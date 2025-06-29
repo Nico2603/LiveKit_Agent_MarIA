@@ -54,6 +54,20 @@ class AppSettings(BaseSettings):
     deepgram_api_key: str = Field(..., env='DEEPGRAM_API_KEY')
     deepgram_model: str = Field('nova-2', env='DEEPGRAM_MODEL')
 
+    # --- Configuraciones específicas para SaaS multi-usuario ---
+    
+    # Rate limiting por usuario
+    max_concurrent_sessions_per_user: int = Field(5, env='MAX_CONCURRENT_SESSIONS_PER_USER')
+    max_daily_messages_per_user: int = Field(1000, env='MAX_DAILY_MESSAGES_PER_USER')
+    
+    # Configuración de recursos por usuario
+    max_session_duration_minutes: int = Field(60, env='MAX_SESSION_DURATION_MINUTES')
+    cleanup_inactive_sessions_minutes: int = Field(30, env='CLEANUP_INACTIVE_SESSIONS_MINUTES')
+    
+    # Métricas y monitoreo por usuario
+    enable_user_metrics: bool = Field(True, env='ENABLE_USER_METRICS')
+    user_activity_log_level: str = Field('INFO', env='USER_ACTIVITY_LOG_LEVEL')
+
     @field_validator('livekit_agent_port', mode='before')
     def _clean_port(cls, v):
         # Elimina cualquier comentario tras '#' y espacios
@@ -87,6 +101,12 @@ class DefaultSettings:
         self.enable_adaptive_voice = os.getenv('ENABLE_ADAPTIVE_VOICE', 'True').lower() == 'true'
         self.deepgram_api_key = os.getenv('DEEPGRAM_API_KEY', '')
         self.deepgram_model = os.getenv('DEEPGRAM_MODEL', 'nova-2')
+        self.max_concurrent_sessions_per_user = int(os.getenv('MAX_CONCURRENT_SESSIONS_PER_USER', '5'))
+        self.max_daily_messages_per_user = int(os.getenv('MAX_DAILY_MESSAGES_PER_USER', '1000'))
+        self.max_session_duration_minutes = int(os.getenv('MAX_SESSION_DURATION_MINUTES', '60'))
+        self.cleanup_inactive_sessions_minutes = int(os.getenv('CLEANUP_INACTIVE_SESSIONS_MINUTES', '30'))
+        self.enable_user_metrics = os.getenv('ENABLE_USER_METRICS', 'True').lower() == 'true'
+        self.user_activity_log_level = os.getenv('USER_ACTIVITY_LOG_LEVEL', 'INFO')
 
 def create_settings():
     """
