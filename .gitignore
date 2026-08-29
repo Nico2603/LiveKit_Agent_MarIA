@@ -96,3 +96,6 @@ ENV/
 .ENV/
 **/venv/
 livekit_agent_maria/venv/
+
+graphify-out/
+
