@@ -99,3 +99,6 @@ livekit_agent_maria/venv/
 
 graphify-out/
 
+
+.graphify/
+
